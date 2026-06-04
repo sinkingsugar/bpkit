@@ -60,6 +60,9 @@ SYM = {
                                             b"?MarkBlueprintAsStructurallyModified@FBlueprintEditorUtils@@SAXPEAVUBlueprint@@@Z"),
     # void* FMemory::Malloc(SIZE_T, uint32 alignment)
     "Malloc": ("UnrealEditor-Core.dll", b"?Malloc@FMemory@@SAPEAX_KI@Z"),
+    # void FBlueprintEditorUtils::RemoveNode(UBlueprint*, UEdGraphNode*, bool bDontRecompile)
+    "RemoveNode": ("UnrealEditor-UnrealEd.dll",
+                   b"?RemoveNode@FBlueprintEditorUtils@@SAXPEAVUBlueprint@@PEAVUEdGraphNode@@_N@Z"),
 }
 
 # ----------------------------------------------------------------------------
@@ -261,6 +264,30 @@ def mark_structurally_modified(bp_ptr):
     proc("MarkBlueprintAsStructurallyModified", None, ctypes.c_void_p)(bp_ptr)
 
 
+def remove_node(bp_ptr, node_ptr, dont_recompile=True):
+    """FBlueprintEditorUtils::RemoveNode -- delete one node from its blueprint."""
+    proc("RemoveNode", None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_bool)(
+        bp_ptr, node_ptr, dont_recompile)
+
+
+def clear_graph(bp_ptr, graph_ptr, gc=True):
+    """Remove every node from a graph (snapshot first, then delete). Returns the
+    count removed. Used by the read->modify->write 'replace' edit flow, since
+    ImportNodesFromText only cross-links WITHIN the pasted set -- so to rewire
+    existing nodes you re-import the whole (mutated) graph as one set.
+
+    RemoveNode detaches a node from the graph's node-array but leaves it parented
+    to the graph until GC, so objects_with_outer would still surface the orphans.
+    gc=True runs a GC pass to actually destroy them, keeping reads authoritative."""
+    nodes = objects_with_outer(graph_ptr)
+    for n in nodes:
+        remove_node(bp_ptr, n, True)
+    if gc:
+        import unreal
+        unreal.SystemLibrary.collect_garbage()
+    return len(nodes)
+
+
 def inject(bp_path, text, graph_name="EventGraph", precheck=True, compile=True, save=True):
     """High-level write: paste `text` into <bp_path>'s <graph_name>, then (by
     default) compile and save. `bp_path` is a full object path '/Game/X.X'.
@@ -295,12 +322,16 @@ def scratch_blueprint(pkg="/Game/_Scratch", name="BP_Scratch", parent=None):
     import unreal
     path = pkg + "/" + name
     eal = unreal.EditorAssetLibrary
-    if eal.does_asset_exist(path):
-        bp = eal.load_asset(path)
-    else:
+    bp = eal.load_asset(path) if eal.does_asset_exist(path) else None
+    if bp is None:
         factory = unreal.BlueprintFactory()
         factory.set_editor_property("parent_class", parent or unreal.Actor)
         bp = unreal.AssetToolsHelpers.get_asset_tools().create_asset(
             name, pkg, unreal.Blueprint, factory)
+        if bp is None:                       # asset-registry staleness -> retry load
+            bp = eal.load_asset(path)
+        if bp is None:
+            raise RuntimeError("could not create or load scratch BP at %s "
+                               "(stale redirector? try a fresh name)" % path)
         eal.save_asset(path)
     return bp, bp.get_path_name()
