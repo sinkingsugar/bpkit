@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Reverse-engineered / exported game content — proprietary (Funcom/Conan Exiles).
+# Never commit blueprint dumps or anything derived from the Dev Kit's /Game assets.
+dump_*.txt
+*.bpdump
+*.t3d
+
+# Local scratch / editor output
+*.log
+*.tmp
