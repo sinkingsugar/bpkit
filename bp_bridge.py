@@ -182,12 +182,84 @@ def get_all_graphs(bp_ptr):
 
 
 def objects_with_outer(outer_ptr, include_nested=False):
-    """Direct UObject children of `outer` (for a UEdGraph: its UEdGraphNodes)."""
+    """Direct UObject children of `outer` (for a UEdGraph: its UEdGraphNodes).
+    WARNING: finds children by ownership, so after RemoveNode it still surfaces
+    undo-buffer orphans. Use graph_nodes() for the authoritative live node list."""
     ta = (ctypes.c_byte * 16)()
     proc("GetObjectsWithOuter", None, ctypes.c_void_p, ctypes.c_void_p,
          ctypes.c_bool, ctypes.c_uint32, ctypes.c_int32)(
         outer_ptr, ctypes.byref(ta), include_nested, 0, 0)
     return _read_tarray_ptrs(ta)
+
+
+# --- authoritative graph nodes: read UEdGraph::Nodes (TArray) directly ---------
+# The 'Nodes' TArray offset within UEdGraph is discovered once by scanning the
+# object for the first TArray whose elements are all plausible UObjects (no FName
+# / reflection needed). Unlike objects_with_outer this reflects the graph's real
+# node list -- RemoveNode drops nodes from it immediately, so no orphan pollution.
+_NODES_OFFSET = None
+_OBJ_CLASS_OFF = 0x10            # UObjectBase::ClassPrivate offset (stable)
+
+
+def _try_u64(addr):
+    try:
+        return ctypes.c_uint64.from_address(addr).value
+    except (OSError, ValueError):
+        return None
+
+
+def _try_i32(addr):
+    try:
+        return ctypes.c_int32.from_address(addr).value
+    except (OSError, ValueError):
+        return None
+
+
+def _looks_like_uobject(ptr):
+    if not ptr or ptr < 0x10000:
+        return False
+    vtable = _try_u64(ptr)                       # must have a vtable
+    klass = _try_u64(ptr + _OBJ_CLASS_OFF)       # ...and a ClassPrivate
+    return bool(vtable and vtable > 0x10000 and klass and klass > 0x10000)
+
+
+def _find_nodes_offset(graph_ptr):
+    """Locate UEdGraph::Nodes: the first TArray<ptr> in the object whose first few
+    elements are all valid UObjects. Cached process-wide (same class layout)."""
+    global _NODES_OFFSET
+    if _NODES_OFFSET is not None:
+        return _NODES_OFFSET
+    for off in range(0x20, 0x90, 8):
+        data = _try_u64(graph_ptr + off)
+        num = _try_i32(graph_ptr + off + 8)
+        mx = _try_i32(graph_ptr + off + 12)
+        if data is None or num is None or mx is None:
+            continue
+        if not (0 < num <= 50000 and num <= mx <= 200000 and data > 0x10000):
+            continue
+        elems = (ctypes.c_uint64 * min(num, 4)).from_address(data)
+        try:
+            if all(_looks_like_uobject(elems[i]) for i in range(min(num, 4))):
+                _NODES_OFFSET = off
+                return off
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def graph_nodes(graph_ptr):
+    """Authoritative live node list of a graph (reads UEdGraph::Nodes). Falls back
+    to objects_with_outer if the offset can't be discovered (e.g. empty graph seen
+    before any populated one)."""
+    off = _find_nodes_offset(graph_ptr)
+    if off is None:
+        return objects_with_outer(graph_ptr)
+    data = _try_u64(graph_ptr + off)
+    num = _try_i32(graph_ptr + off + 8)
+    if not data or not num or num <= 0:
+        return []
+    arr = (ctypes.c_uint64 * num).from_address(data)
+    return [arr[i] for i in range(num)]
 
 
 def find_graph(bp_path, graph_name="EventGraph", load=True):
@@ -233,7 +305,7 @@ def read_blueprint(path, load=True):
         raise ValueError("blueprint not found: %s" % path)
     out = []
     for i, g in enumerate(get_all_graphs(bp)):
-        nodes = objects_with_outer(g, include_nested=False)
+        nodes = graph_nodes(g)
         out.append({"index": i, "graph_ptr": g, "node_count": len(nodes),
                     "text": export_nodes(nodes)})
     return out
@@ -279,7 +351,7 @@ def clear_graph(bp_ptr, graph_ptr, gc=True):
     RemoveNode detaches a node from the graph's node-array but leaves it parented
     to the graph until GC, so objects_with_outer would still surface the orphans.
     gc=True runs a GC pass to actually destroy them, keeping reads authoritative."""
-    nodes = objects_with_outer(graph_ptr)
+    nodes = graph_nodes(graph_ptr)
     for n in nodes:
         remove_node(bp_ptr, n, True)
     if gc:
