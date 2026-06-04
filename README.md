@@ -31,6 +31,7 @@ as the engine DLLs, which is what makes the `ctypes` bridge possible.
 | path | role |
 |---|---|
 | `bp_bridge.py` | **the library** — proc resolution, FString/TSet/TArray marshalling, read/write/compile. Public API: `read_blueprint`, `inject`, `can_import`, `import_nodes`, `export_nodes`, `find_object/find_graph`, `scratch_blueprint`. Runs inside the editor. |
+| `bp_compact.py` | compress exported node text into a dense, navigable outline (~23x smaller). Pure stdlib, runs offline on a dump. `--summary` / `--graph NAME` / `--node NAME`. |
 | `ue_run.py` | driver: ships a local `.py` into the running editor over `remote_execution` and echoes its output |
 | `pe_exports.py` | dependency-free PE export-table dumper (find the decorated symbol names to resolve) |
 | `examples/read_blueprint.py` | read every graph of a blueprint to node text |
@@ -59,13 +60,26 @@ makes UE free pointers it never `malloc`'d → heap corruption + a *delayed* cra
 element buffer must be allocated with the engine's exported `FMemory::Malloc`. See the comments
 in `ue_bp_inject.py`.
 
+## Navigating a blueprint
+
+```powershell
+# 1. dump the blueprint's node text from the editor (gitignored output)
+& $py ue_run.py examples\read_blueprint.py
+# 2. navigate offline at ~23x compression
+& $py bp_compact.py dump_BP_BatDemonGlider.txt --summary           # graph map + entry points
+& $py bp_compact.py dump_BP_BatDemonGlider.txt --graph LerpCamRotation
+```
+
+The compact view is lossy-for-navigation; for the exact text of one node (e.g. to author
+a variant) re-export just that node losslessly with `bp_bridge.export_nodes([node_ptr])`.
+
 ## Status / roadmap
 
 - ✅ Write (inject + compile + save) — safe, verified
 - ✅ Read (any graph → canonical node text) — safe, verified
-- ⬜ Author real wired-logic nodes from the captured examples
-- ⬜ Blueprint-text compactor + navigator (the exported text is hugely verbose; ~20 default
-  flags per pin line) for token-efficient inspection
+- ✅ Blueprint-text compactor + navigator (`bp_compact.py`, ~23x)
+- ⬜ Author real wired-logic nodes from the captured examples (compact to find the pattern,
+  drill down for exact text, parameterize, inject, let `compile_blueprint` validate)
 
 ## Notes
 
