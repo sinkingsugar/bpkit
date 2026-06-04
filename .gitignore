@@ -8,6 +8,9 @@ __pycache__/
 dump_*.txt
 *.bpdump
 *.t3d
+# compacted blueprint views (derived from the above)
+*.compact.txt
+compact_*/
 
 # Local scratch / editor output
 *.log

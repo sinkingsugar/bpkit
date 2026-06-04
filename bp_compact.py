@@ -24,6 +24,7 @@ Output legend (per node):
       i:<pin> <- <source>.<pin>[, ...]     incoming link(s) into an input pin
       i:<pin> = <literal>                  non-default literal on an input pin
 """
+import os
 import re
 import sys
 
@@ -268,6 +269,18 @@ def _main(argv):
     with open(path, "r", encoding="utf-8") as f:
         nodes = parse_nodes(f.read())
 
+    if "--split" in opts:
+        d = opts[opts.index("--split") + 1]
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "_summary.txt"), "w", encoding="utf-8") as f:
+            f.write(summary(nodes))
+        names = graph_names(nodes)
+        for g in names:
+            safe = re.sub(r"[^A-Za-z0-9_.-]", "_", g) or "graph"
+            with open(os.path.join(d, safe + ".txt"), "w", encoding="utf-8") as f:
+                f.write(compact_graph(nodes, g))
+        print("wrote _summary.txt + %d graph files to %s/" % (len(names), d))
+        return
     if "--summary" in opts:
         print(summary(nodes)); return
     if "--graph" in opts:
