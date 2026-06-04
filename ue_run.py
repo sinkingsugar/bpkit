@@ -7,6 +7,10 @@ Runs <local_script.py>'s *source* inside the editor's interpreter via the
 remote_execution channel (MODE_EXEC_FILE), so it shares the editor's address
 space — `import unreal`, `import ctypes`, and the already-loaded engine DLLs
 are all in scope. stdout/stderr from the editor are echoed back here.
+
+Payloads that need the library do `sys.path.insert(...); import bp_bridge`
+themselves (see examples/) — MODE_EXEC_FILE is picky about a modified command,
+so we ship the file's source verbatim.
 """
 import sys, time
 

@@ -28,22 +28,28 @@ as the engine DLLs, which is what makes the `ctypes` bridge possible.
 
 ## Layout
 
-| file | role |
+| path | role |
 |---|---|
-| `ue_bp_inject.py` | the library: proc resolution, FString/TSet/TArray marshalling, read/write/compile helpers. **Runs inside the editor.** |
+| `bp_bridge.py` | **the library** — proc resolution, FString/TSet/TArray marshalling, read/write/compile. Public API: `read_blueprint`, `inject`, `can_import`, `import_nodes`, `export_nodes`, `find_object/find_graph`, `scratch_blueprint`. Runs inside the editor. |
 | `ue_run.py` | driver: ships a local `.py` into the running editor over `remote_execution` and echoes its output |
 | `pe_exports.py` | dependency-free PE export-table dumper (find the decorated symbol names to resolve) |
-| `ue_remote_smoketest.py` | connectivity smoke test |
-| `read_real_bp.py` | example: dump every graph of a blueprint to text |
-| `*` (probe_/introspect_/diagnose_/validate_/test_) | development scratch — how the native struct layouts were reverse-engineered safely |
+| `examples/read_blueprint.py` | read every graph of a blueprint to node text |
+| `examples/inject_and_compile.py` | inject a node, compile, save |
+| `examples/smoketest.py` | remote-execution connectivity check |
+| `dev/` | the reverse-engineering / journey scripts (provenance; target the old API — see `dev/README.md`) |
 
 ## Usage
 
 ```powershell
-# run any in-editor payload via the bundled interpreter
-& 'C:\Program Files\Epic Games\CEUE5Devkit\Engine\Binaries\ThirdParty\Python3\Win64\python.exe' `
-    tools\ue_run.py tools\read_real_bp.py
+# run any in-editor payload via the editor's bundled interpreter
+$py = 'C:\Program Files\Epic Games\CEUE5Devkit\Engine\Binaries\ThirdParty\Python3\Win64\python.exe'
+& $py ue_run.py examples\read_blueprint.py
+& $py ue_run.py examples\inject_and_compile.py
 ```
+
+Payloads that use the library insert the repo root on `sys.path` and `import bp_bridge`
+(see the examples) — `MODE_EXEC_FILE` ships the file source verbatim, so the import path
+must be set inside the payload.
 
 ## Key gotcha (why this took care to get right)
 
