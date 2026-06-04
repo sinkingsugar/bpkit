@@ -17,7 +17,9 @@ print("blueprint %s -> %d graph(s)" % (ASSET, len(graphs)))
 for g in graphs:
     print("  graph[%d] nodes=%-4d chars=%d" % (g["index"], g["node_count"], len(g["text"])))
 
-with open(OUT, "w", encoding="utf-8") as f:
+# newline="" so UE's own \r\n line endings pass through untouched; in Windows
+# text mode they'd each become \r\r\n, which re-parses into junk blank lines.
+with open(OUT, "w", encoding="utf-8", newline="") as f:
     for g in graphs:
         f.write("\n\n##### GRAPH[%d] nodes=%d #####\n%s"
                 % (g["index"], g["node_count"], g["text"]))

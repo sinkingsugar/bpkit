@@ -181,6 +181,11 @@ class Graph(object):
         return [n for n in self.nodes if short in n.cls]
 
     def remove(self, node):
+        # drop every link into/out of this node first, else other nodes keep
+        # mirror LinkedTo refs to a node that no longer exists (which a later
+        # node reusing the same auto-generated name would silently capture).
+        for p in list(node.pins):
+            self.unwire(node, p.name)
         self.nodes.remove(node)
 
     def add(self, node):

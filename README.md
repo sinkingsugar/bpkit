@@ -12,11 +12,15 @@ them via `ctypes`. The engine's own compiler is the validator.
 ```
 WRITE:  authored node text → CanImportNodesFromText (safe pre-check) → ImportNodesFromText
         → MarkBlueprintAsStructurallyModified → compile_blueprint → save_asset
-READ:   GetAllGraphs → GetObjectsWithOuter → ExportNodesToText (per node) → node text
+READ:   GetAllGraphs → UEdGraph::Nodes (direct read) → ExportNodesToText (per node) → node text
 ```
 
-Verified by reading an entire production blueprint (19 graphs, 959 nodes, ~2.8 MB of node text)
+Verified by reading an entire production blueprint (19 graphs, 942 nodes, ~2.8 MB of node text)
 and by injecting + compiling nodes, with the editor staying stable.
+
+`GetObjectsWithOuter` was the original node-enumeration path but is now only a fallback: it also
+surfaces orphaned nodes left in the transaction (undo) buffer, so the direct `UEdGraph::Nodes`
+read is authoritative.
 
 ## How it connects
 
@@ -31,11 +35,15 @@ as the engine DLLs, which is what makes the `ctypes` bridge possible.
 | path | role |
 |---|---|
 | `bp_bridge.py` | **the library** — proc resolution, FString/TSet/TArray marshalling, read/write/compile. Public API: `read_blueprint`, `inject`, `can_import`, `import_nodes`, `export_nodes`, `find_object/find_graph`, `scratch_blueprint`. Runs inside the editor. |
-| `bp_compact.py` | compress exported node text into a dense, navigable outline (~23x smaller). Pure stdlib, runs offline on a dump. `--summary` / `--graph NAME` / `--node NAME`. |
+| `bp_ir.py` | unified Graph IR — parse exported node text → edit (`wire`/`unwire`/`remove`) → render back to import text. Pure stdlib, runs in-editor or offline. |
+| `bp_author.py` | declarative authoring DSL: build a graph from intent (`event`/`call`/`branch`/`wire`) → import text. Pure stdlib. |
+| `bp_compact.py` | compress exported node text into a dense, navigable outline (~23x smaller). Pure stdlib, runs offline on a dump. `--summary` / `--graph NAME` / `--node NAME` / `--split`. |
 | `ue_run.py` | driver: ships a local `.py` into the running editor over `remote_execution` and echoes its output |
 | `pe_exports.py` | dependency-free PE export-table dumper (find the decorated symbol names to resolve) |
 | `examples/read_blueprint.py` | read every graph of a blueprint to node text |
 | `examples/inject_and_compile.py` | inject a node, compile, save |
+| `examples/author_logic.py` | author wired logic from intent (`bp_author`) → inject → compile |
+| `examples/edit_graph.py` | parse a real graph into the IR (`bp_ir`), edit, render back, inject |
 | `examples/smoketest.py` | remote-execution connectivity check |
 | `dev/` | the reverse-engineering / journey scripts (provenance; target the old API — see `dev/README.md`) |
 
@@ -58,7 +66,7 @@ must be set inside the payload.
 `FMemory::Free`s the set's internal buffers. A hand-built set whose memory is ctypes-allocated
 makes UE free pointers it never `malloc`'d → heap corruption + a *delayed* crash. The set's
 element buffer must be allocated with the engine's exported `FMemory::Malloc`. See the comments
-in `ue_bp_inject.py`.
+in `bp_bridge.py` (the header note and `_make_set1_fmemory`).
 
 ## Navigating a blueprint
 
@@ -78,8 +86,9 @@ a variant) re-export just that node losslessly with `bp_bridge.export_nodes([nod
 - ✅ Write (inject + compile + save) — safe, verified
 - ✅ Read (any graph → canonical node text) — safe, verified
 - ✅ Blueprint-text compactor + navigator (`bp_compact.py`, ~23x)
-- ⬜ Author real wired-logic nodes from the captured examples (compact to find the pattern,
-  drill down for exact text, parameterize, inject, let `compile_blueprint` validate)
+- ✅ Author / edit wired-logic nodes (`bp_author.py` intent DSL, `bp_ir.py` parse→edit→render),
+  inject, let `compile_blueprint` validate (see `examples/author_logic.py`, `examples/edit_graph.py`)
+- ⬜ Discover canonical text for the full set of real logic-node patterns and parameterize them
 
 ## Notes
 

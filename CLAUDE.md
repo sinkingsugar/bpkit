@@ -43,8 +43,8 @@ To use:
    `& 'C:\Program Files\Epic Games\CEUE5Devkit\Engine\Binaries\ThirdParty\Python3\Win64\python.exe' <script>`
    pointing `sys.path` at the plugin's `Content\Python` and importing `remote_execution`.
    Defaults are same-machine-ready: multicast `239.0.0.1:6766`, command `127.0.0.1:6776`.
-- Smoke test: `tools/ue_remote_smoketest.py` (prints engine ver + logs into the editor).
-- API probe:  `tools/ue_probe_bp.py`.
+- Smoke test: `examples/smoketest.py` (prints engine ver + logs into the editor).
+- API probe:  `dev/ue_probe_bp.py` (provenance; targets the pre-refactor API).
 
 **MCP is NOT needed here.** Claude Code has shell+Python, so it drives the editor directly over
 `remote_execution` — strictly more capable than a fixed MCP tool surface. MCP only earns its place for
@@ -75,7 +75,8 @@ CANNOT *via the stock `unreal` Python API* (not reflected; would be C++ unavaila
 > graphs, 959 nodes, 2.84 MB) with zero crashes. Key gotcha: `ExportNodesToText` takes the `TSet`
 > BY VALUE and `~TSet`-frees its buffers, so the set's element buffer MUST be `FMemory::Malloc`'d,
 > not ctypes — else heap corruption + delayed crash (cost 2 editor crashes to learn; see memory
-> `ctypes-bp-paste`). Tooling in `tools/` (`ue_bp_inject.py`, `ue_run.py`, `pe_exports.py`).
+> `ctypes-bp-paste`). Tooling at repo root: `bp_bridge.py` (the library — was `ue_bp_inject.py`
+> before the refactor), `ue_run.py`, `pe_exports.py`.
 
 ## Architecture decision
 
