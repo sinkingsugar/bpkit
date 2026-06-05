@@ -303,16 +303,21 @@ freely. The exact steps that worked (all content-only, scriptable from BP):
 
 ---
 
-## 9. Roadmap / TODO (not yet done)
+## 9. Roadmap / TODO
 
-Status: **research + live single-rider prototype done (§7, §8).** Remaining to make it a
-real, usable mod:
+Status: **research + live single-rider prototype done (§7, §8); recipe now reproduced as
+compiled Blueprint and live-verified (§10 / C1 done).** Remaining to make it a real mod:
 
-- [ ] **Auto-on-mount Blueprint.** Hook the player BP's `BPPostMountServerClient(mounted_npc)`
-      → for each current follower, run the §8 attach/freeze/pose recipe against `mounted_npc`.
-- [ ] **Auto-on-dismount reversal.** Hook `BPPostDismountServerClient` / `SignalDismountStart`
-      → restore AnimBP (`ANIMATION_BLUEPRINT`), re-enable movement/collision/tick, re-possess,
-      detach, teleport the follower beside the player.
+- [x] **Recipe as compiled Blueprint (C1, done 2026-06-05).** `Stow`/`Restore` authored as K2
+      node-graphs on `BP_MF_Recipe`, injected from outside the editor, compiled clean, and
+      live-verified in PIE: `Stow` snaps a dancer's mesh onto the horse `attachrider` socket
+      (distance 0.0); `Restore` detaches + restores `MOVE_Walking`. See §10.
+- [ ] **C2 — Polling manager.** A `DreamworldMods.ModController` subclass (Actor w/ Tick) that
+      polls each player's `get_mount()`/`get_rider()` and fires `Stow` on mount-transition,
+      `Restore` on dismount-transition. (Decided over event-override; no pawn edit. mem
+      `mod-controller-hook`.)
+- [ ] **Auto-on-dismount reversal.** Covered by C2's dismount-transition branch; polish the
+      restore (teleport beside player, re-possess) is C5.
 - [ ] **Multiple followers.** Player should be able to bring several mounted followers. The
       follower-count cap is a known-easy mod (community mods already raise pet/thrall counts);
       raise it, then the attach loop already handles N followers. Decide spacing/visual when
@@ -330,3 +335,42 @@ real, usable mod:
       test on a listen + dedicated server, not just SP.
 - [ ] **Persistence.** Never `Destroy()` a follower to stow it; ensure attach/frozen state
       survives relog and doesn't corrupt follower registration.
+
+---
+
+## 10. Implementation log — C1: recipe as compiled Blueprint (2026-06-05)
+
+The §8 recipe was driven by raw Python in the prototype. C1 re-expressed it as **compiled
+Blueprint logic** so it can ship in a mod (no Python/C++ at runtime), authored entirely from
+outside the editor via node-text injection (`bp_author`/`bp_ir` → `bp_bridge.inject` → compile).
+
+**Artifact:** `/Game/_Scratch/BP_MF_Recipe` (Actor BP, will move onto the C2 ModController).
+- Member vars (instance-editable): `Rider`, `Mount` (ConanCharacter refs), `MountIdleAnim`
+  (AnimSequence ref, default `A_human_mounted_idle_HORSE`).
+- `Stow`: attach `Rider.Mesh` → `Mount.Mesh` socket `attachrider` (SnapToTarget) → `DisableMovement`
+  → `SetActorEnableCollision(false)` → `SetAnimationMode(SingleNode)` → `PlayAnimation(MountIdleAnim, loop)`.
+- `Restore`: `SetAnimationMode(Blueprint)` → `SetMovementMode(MOVE_Walking)` →
+  `SetActorEnableCollision(true)` → re-attach `Mesh` → `CapsuleComponent`.
+
+**Live result (PIE), both directions verified on a dancer NPC:** `Stow` → mesh exactly on
+socket (dist 0.0), rides the moving horse seated; `Restore` → detaches, `MOVE_Walking`, stands
+on the ground correctly and resumes following on foot. Build/verify scripts: `dev/c1_build.py`
+(authoring), `dev/c1_errors.py` (compile-error scan), `dev/c1_pie_test.py` +
+`dev/c1_restore_test.py` (live).
+
+**Restore mesh-offset fix (critical):** re-attaching the mesh to the capsule with `SnapToTarget`
+snaps it to the capsule *center* → rider floats ~96u up and yaw-rotated. Fix: a `SavedMeshXform`
+(Transform) member var — `Stow` saves `mesh.GetRelativeTransform()` BEFORE reparenting, `Restore`
+`K2_SetRelativeTransform`s it back after re-attach. This NPC's true offset is `(0,0,-96), yaw -90°`
+(the standard Character mesh-vs-capsule offset; readable from the class CDO's mesh component).
+GOTCHA: `Stow` must run **once** per mount — calling it again while already stowed re-saves the
+(attached, ~zero) transform and corrupts the restore. The C2 poller fires once per transition, so
+fine; add an "already stowed?" guard if ever called ad-hoc.
+
+**Authoring lessons (also in memory):** component accessors (`GetMesh`/`GetCharacterMovement`)
+are unreflected C++ inlines → use non-self-context `VariableGet` of the component var
+(`bp-typed-pin-defaults`); node defaults/wires need the exact canonical K2 pin name + matching
+PinType or they orphan and the autogen default silently wins; never compile a BP during PIE
+(`no-bp-edit-during-pie`); a stale BP reload collision-renames pasted custom events (delete the
+asset for a clean build, Play stopped); `Summon` needs the class pre-`load_object`'d and spawns
+deferred a frame; finite-lifespan NPCs (undead) vaporize when summoned ownerless.

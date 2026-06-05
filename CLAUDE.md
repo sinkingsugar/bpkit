@@ -46,6 +46,18 @@ To use:
 - Smoke test: `examples/smoketest.py` (prints engine ver + logs into the editor).
 - API probe:  `dev/ue_probe_bp.py` (provenance; targets the pre-refactor API).
 
+> **INVOCATION GOTCHA (cost an hour of false "channel down" debugging 2026-06-05).**
+> Two DIFFERENT usage patterns — do not cross them:
+> - `python examples/smoketest.py` — run a **standalone client DIRECTLY**. It opens its
+>   own `remote_execution` connection. (Use the bundled python; same machine.)
+> - `python ue_run.py <payload>` — `<payload>` must be **editor-side code** (`import unreal;
+>   ...`); ue_run ships its *source* into the editor and runs it there.
+> Running `ue_run.py examples/smoketest.py` DOUBLE-WRAPS: the editor runs the client, which
+> then tries to multicast-discover a node *from inside the editor*, finds none, and prints
+> `NO NODE FOUND` — which looks exactly like a dead channel but isn't. If `ue_run.py` echoes
+> `[Info]` `LogPython` lines back at all, the channel is FINE; read what the payload actually
+> did. Quick liveness check: `python ue_run.py dev/ping.py`.
+
 **MCP is NOT needed here.** Claude Code has shell+Python, so it drives the editor directly over
 `remote_execution` — strictly more capable than a fixed MCP tool surface. MCP only earns its place for
 external/sandboxed clients or a guardrailed tool menu.
