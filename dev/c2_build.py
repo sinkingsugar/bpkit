@@ -38,6 +38,17 @@ for vn in ("Initialized", "WasMounted"):
 intt = unreal.BlueprintEditorLibrary.get_basic_type_by_name("int")
 for vn in ("MgrVersion", "DbgCount"):
     unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, vn, intt)  # no-ops if exists
+# C2 action state: SpareHorse (the mount we stow humanoids onto), SavedMeshXform (rider
+# mesh's relative-to-capsule xform saved at stow, restored at dismount so it doesn't float),
+# MountIdleAnim (the seated idle pose; CDO default set below). One SavedMeshXform var is fine
+# for one humanoid follower; per-rider state is a C3/multi-follower polish item.
+conan_ref = unreal.BlueprintEditorLibrary.get_object_reference_type(unreal.ConanCharacter.static_class())
+unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, "SpareHorse", conan_ref)
+xform_t = unreal.BlueprintEditorLibrary.get_struct_type(unreal.Transform.static_struct())
+unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, "SavedMeshXform", xform_t)
+anim_ref = unreal.BlueprintEditorLibrary.get_object_reference_type(unreal.AnimSequence.static_class())
+unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, "MountIdleAnim", anim_ref)
+ANIM = "/Game/Characters/humans/animations/mounted/Horse/A_human_mounted_idle_HORSE.A_human_mounted_idle_HORSE"
 
 g = ir.Graph("EventGraph")
 
@@ -64,6 +75,66 @@ def dbg_int(label, src_node, src_pin, pos):
     p = g.call("PrintString", KSL, pos=pos)
     g.wire(cat, "ReturnValue", p, "InString", exec=False)
     return p
+
+# --- C1 attach/restore node helpers (replicated; reuse the proven Stow/Restore pattern) ---
+CHAR = "/Script/Engine.Character"
+SMC = "/Script/Engine.SkeletalMeshComponent"
+SCENE = "/Script/Engine.SceneComponent"
+CMC = "/Script/Engine.CharacterMovementComponent"
+ACTOR = "/Script/Engine.Actor"
+CLS = {"Mesh": SMC, "CharacterMovement": CMC,
+       "CapsuleComponent": "/Script/Engine.CapsuleComponent", "SpareHorse": CONAN,
+       "MountIdleAnim": "/Script/Engine.AnimSequence"}
+STRUCTS = {"SavedMeshXform": "/Script/CoreUObject.Transform"}
+ENUM = {
+    "EAttachmentRule": "/Script/CoreUObject.Enum'/Script/Engine.EAttachmentRule'",
+    "EAnimationMode":  "/Script/CoreUObject.Enum'/Script/Engine.EAnimationMode'",
+    "EMovementMode":   "/Script/CoreUObject.Enum'/Script/Engine.EMovementMode'",
+}
+def type_obj(pin, cls_path):
+    pin.set("PinType.PinCategory", '"object"')
+    pin.set("PinType.PinSubCategoryObject", "/Script/CoreUObject.Class'%s'" % cls_path)
+def type_struct(pin, struct_path):
+    pin.set("PinType.PinCategory", '"struct"')
+    pin.set("PinType.PinSubCategoryObject", "/Script/CoreUObject.ScriptStruct'%s'" % struct_path)
+def type_var_pin(pin, name):
+    type_struct(pin, STRUCTS[name]) if name in STRUCTS else type_obj(pin, CLS[name])
+def var_self(name, pos):
+    n = g.node("K2Node_VariableGet", ['VariableReference=(MemberName="%s",bSelfContext=True)' % name],
+               base="VariableGet", pos=pos)
+    p = n.pin(name); p.dir = "EGPD_Output"; type_var_pin(p, name); return n
+def var_set_m(name, pos):
+    n = g.node("K2Node_VariableSet", ['VariableReference=(MemberName="%s",bSelfContext=True)' % name],
+               base="VariableSet", pos=pos)
+    p = n.pin(name); p.dir = "EGPD_Input"; type_var_pin(p, name); return n
+def comp_of(target, target_pin, comp_var, pos, parent=CHAR):
+    """Read a component (Mesh/CharacterMovement/Capsule) off `target`'s output pin."""
+    n = g.node("K2Node_VariableGet",
+               ['VariableReference=(MemberName="%s",MemberParent="/Script/CoreUObject.Class\'%s\'",bSelfContext=False)'
+                % (comp_var, parent)], base="VariableGet", pos=pos)
+    sp = n.pin("self"); sp.dir = "EGPD_Input"; type_obj(sp, parent)
+    op = n.pin(comp_var); op.dir = "EGPD_Output"; type_obj(op, CLS[comp_var])
+    g.wire(target, target_pin, n, "self", exec=False); return n
+def set_default(node, pin, value, category, enum=None):
+    p = node.pin(pin); p.dir = "EGPD_Input"
+    p.set("PinType.PinCategory", '"%s"' % category)
+    if enum: p.set("PinType.PinSubCategoryObject", ENUM[enum])
+    p.set("DefaultValue", '"%s"' % value)
+def bare_call(member, parent, pos):
+    return g.call(member, parent, pos=pos)
+def attach_node(pos, socket, rules="SnapToTarget"):
+    n = bare_call("K2_AttachToComponent", SCENE, pos)
+    set_default(n, "SocketName", socket, "name")
+    for r in ("LocationRule", "RotationRule", "ScaleRule"):
+        set_default(n, r, rules, "byte", enum="EAttachmentRule")
+    set_default(n, "bWeldSimulatedBodies", "false", "bool")
+    return n
+class Chain(object):
+    def __init__(self, start_node, start_pin):
+        self.node, self.pin = start_node, start_pin
+    def then(self, call_node, in_pin="execute", out_pin="then"):
+        g.wire(self.node, self.pin, call_node, in_pin, exec=True)
+        self.node, self.pin = call_node, out_pin; return call_node
 
 tick = g.event("ReceiveTick")
 getP = g.call("GetPlayerCharacter", GS, pos=(0, 350))
@@ -112,56 +183,118 @@ g.wire(neq, "ReturnValue", bChanged, "Condition", exec=False)
 bMounted = g.branch(pos=(1600, 500))
 g.wire(bChanged, "then", bMounted, "execute", exec=True)
 g.wire(isValid, "ReturnValue", bMounted, "Condition", exec=False)
-# MOUNT branch -- VERBOSE DEBUG. Exec chain on mount:
-#   bMounted.then -> pVer -> pHit -> pCount -> loop.Exec
-#   loop.LoopBody -> pBody -> bIsMount(IsMount?) -> else: pStow
-#   loop.Completed -> pDone
-# Reading the prints: pHit always (mount entered). Then:
-#   pCount=0 + pDone, no pBody     -> follower source EMPTY at this tick
-#   pCount>0 but NO pBody/pDone    -> loop INERT (stale class / RWT missing)  <-- the cache bug
-#   pBody xN but no pStow          -> all followers report IsMount=true (filter)
-#   pBody + pStow                  -> WORKING
+# MOUNT branch -- the real action (2-pass over followers):
+#   bMounted.then -> pVer (MGR VERSION) -> pHit (MOUNT DETECTED)
+#   -> Pass A: find a mountable follower -> SpareHorse
+#   -> Pass B: stow each non-mountable (humanoid) follower onto SpareHorse (C1 attach chain)
 getVer = g.var_get("MgrVersion", "int", pos=(1850, 250))
 pVer = dbg_int("MGR VERSION=", getVer, "MgrVersion", pos=(2050, 250))
 g.wire(bMounted, "then", pVer, "execute", exec=True)
 pHit = dbg("=== MOUNT DETECTED ===", pos=(2050, 60))
 g.wire(pVer, "then", pHit, "execute", exec=True)
 
+# shared follower source for both passes (one impure get fans out to both loops)
 getTSC2 = g.call("GetThrallSystemComponent", CONAN, pos=(1850, 420))
 g.wire(PLAYER[0], PLAYER[1], getTSC2, "self", exec=False)
 getFol = g.call("GetFollowingThrallCharacters", TSC, pos=(2100, 420))
 g.wire(getTSC2, "ReturnValue", getFol, "self", exec=False)
-# reset DbgCount=0 before the loop (counts followers seen, no wildcard Array_Length)
-setCnt0 = g.var_set("DbgCount", "int", pos=(2350, 250)); setCnt0.pin("DbgCount").literal("0")
-g.wire(pHit, "then", setCnt0, "execute", exec=True)
 
-loop = g.foreach(CONAN, pos=(2650, 420))
-g.wire(getFol, "ReturnValue", loop, "Array", exec=False)
-g.wire(setCnt0, "then", loop, "Exec", exec=True)
-pBody = dbg("LOOP BODY (a follower)", pos=(2900, 250))
-g.wire(loop, "LoopBody", pBody, "execute", exec=True)
-# DbgCount += 1
-getCnt = g.var_get("DbgCount", "int", pos=(2900, 430))
-addCnt = g.call("Add_IntInt", KML, pos=(3100, 430)); g.wire(getCnt, "DbgCount", addCnt, "A", exec=False)
-g.typed_input(addCnt, "B", "1", "int")
-setCnt = g.var_set("DbgCount", "int", pos=(3300, 250)); g.wire(addCnt, "ReturnValue", setCnt, "DbgCount", exec=False)
-g.wire(pBody, "then", setCnt, "execute", exec=True)
-# IsMountable (NOT IsMount): IsMount is mount-STATE (flips, true-for-all at mount time);
-# IsMountable is the stable creature-type -> True for horses, False for humanoid thralls.
-isMtbl = g.call("IsMountable", CONAN, pos=(3550, 700))
-g.wire(loop, "Array Element", isMtbl, "self", exec=False)
-bIsMtbl = g.branch(pos=(3550, 450))
-g.wire(setCnt, "then", bIsMtbl, "execute", exec=True)
-g.wire(isMtbl, "ReturnValue", bIsMtbl, "Condition", exec=False)
-pStow = dbg("STOW A FOLLOWER", pos=(3800, 420))
-g.wire(bIsMtbl, "else", pStow, "execute", exec=True)   # NOT mountable -> humanoid -> stow it
-# at completion print the count (followers seen). LOOP COMPLETED firing at all = loop ran.
-getCntF = g.var_get("DbgCount", "int", pos=(2900, 60))
-pDone = dbg_int("=== LOOP COMPLETED, followers seen=", getCntF, "DbgCount", pos=(3150, 60))
-g.wire(loop, "Completed", pDone, "execute", exec=True)
+# PASS A: find a spare horse (a mountable follower) -> SpareHorse var
+loopA = g.foreach(CONAN, pos=(2400, 250))
+g.wire(getFol, "ReturnValue", loopA, "Array", exec=False)
+g.wire(pHit, "then", loopA, "Exec", exec=True)
+mtblA = g.call("IsMountable", CONAN, pos=(2650, 480))
+g.wire(loopA, "Array Element", mtblA, "self", exec=False)
+bMtblA = g.branch(pos=(2650, 250))
+g.wire(loopA, "LoopBody", bMtblA, "execute", exec=True)
+g.wire(mtblA, "ReturnValue", bMtblA, "Condition", exec=False)
+setSpare = var_set_m("SpareHorse", (2950, 250))
+g.wire(loopA, "Array Element", setSpare, "SpareHorse", exec=False)
+g.wire(bMtblA, "then", setSpare, "execute", exec=True)   # mountable -> remember as the spare horse
 
-pDis = dbg("FOLLOWERS: DISMOUNT", pos=(1850, 950))
+# PASS B: stow each NON-mountable (humanoid) follower onto SpareHorse (replicates C1 build_stow)
+loopB = g.foreach(CONAN, pos=(2400, 750))
+g.wire(getFol, "ReturnValue", loopB, "Array", exec=False)
+g.wire(loopA, "Completed", loopB, "Exec", exec=True)
+mtblB = g.call("IsMountable", CONAN, pos=(2650, 980))
+g.wire(loopB, "Array Element", mtblB, "self", exec=False)
+bMtblB = g.branch(pos=(2650, 750))
+g.wire(loopB, "LoopBody", bMtblB, "execute", exec=True)
+g.wire(mtblB, "ReturnValue", bMtblB, "Condition", exec=False)
+pStow = dbg("STOWING humanoid -> spare horse", pos=(2950, 750))
+g.wire(bMtblB, "else", pStow, "execute", exec=True)   # NOT mountable -> humanoid -> stow
+
+spareGet = var_self("SpareHorse", (2950, 1150))
+rMesh = comp_of(loopB, "Array Element", "Mesh", (3200, 950))
+mMesh = comp_of(spareGet, "SpareHorse", "Mesh", (3200, 1150))
+rMove = comp_of(loopB, "Array Element", "CharacterMovement", (3200, 1350))
+chain = Chain(pStow, "then")
+# save rider mesh's relative-to-capsule xform BEFORE reparenting (restore uses it)
+getX = bare_call("GetRelativeTransform", SCENE, pos=(3450, 1350))
+gxp = getX.pin("ReturnValue"); gxp.dir = "EGPD_Output"; type_struct(gxp, "/Script/CoreUObject.Transform")
+g.wire(rMesh, "Mesh", getX, "self", exec=False)
+saveX = var_set_m("SavedMeshXform", (3450, 1150))
+g.wire(getX, "ReturnValue", saveX, "SavedMeshXform", exec=False)
+chain.then(saveX)
+attach = attach_node((3700, 750), "attachrider")
+g.wire(rMesh, "Mesh", attach, "self", exec=False)
+g.wire(mMesh, "Mesh", attach, "Parent", exec=False)   # canonical name is 'Parent'
+chain.then(attach)
+disable = bare_call("DisableMovement", CMC, (3950, 750))
+g.wire(rMove, "CharacterMovement", disable, "self", exec=False)
+chain.then(disable)
+nocol = bare_call("SetActorEnableCollision", ACTOR, (4200, 750))
+set_default(nocol, "bNewActorEnableCollision", "false", "bool")
+g.wire(loopB, "Array Element", nocol, "self", exec=False)
+chain.then(nocol)
+amode = bare_call("SetAnimationMode", SMC, (4450, 750))
+set_default(amode, "InAnimationMode", "AnimationSingleNode", "byte", enum="EAnimationMode")
+g.wire(rMesh, "Mesh", amode, "self", exec=False)
+chain.then(amode)
+play = bare_call("PlayAnimation", SMC, (4700, 750))
+set_default(play, "bLooping", "true", "bool")
+animGet = var_self("MountIdleAnim", (4450, 1000))
+g.wire(animGet, "MountIdleAnim", play, "NewAnimToPlay", exec=False)
+g.wire(rMesh, "Mesh", play, "self", exec=False)
+chain.then(play)
+
+# DISMOUNT branch: restore each humanoid follower (reverse of stow) -- replicates C1 build_restore
+pDis = dbg("FOLLOWERS: DISMOUNT (restoring)", pos=(1850, 1700))
 g.wire(bMounted, "else", pDis, "execute", exec=True)
+loopD = g.foreach(CONAN, pos=(2100, 1700))
+g.wire(getFol, "ReturnValue", loopD, "Array", exec=False)
+g.wire(pDis, "then", loopD, "Exec", exec=True)
+mtblD = g.call("IsMountable", CONAN, pos=(2350, 1930))
+g.wire(loopD, "Array Element", mtblD, "self", exec=False)
+bMtblD = g.branch(pos=(2350, 1700))
+g.wire(loopD, "LoopBody", bMtblD, "execute", exec=True)
+g.wire(mtblD, "ReturnValue", bMtblD, "Condition", exec=False)
+rMeshD = comp_of(loopD, "Array Element", "Mesh", (2650, 1900))
+rMoveD = comp_of(loopD, "Array Element", "CharacterMovement", (2650, 2100))
+rCapD = comp_of(loopD, "Array Element", "CapsuleComponent", (2650, 2300))
+chainD = Chain(bMtblD, "else")   # NOT mountable -> humanoid -> restore
+amodeD = bare_call("SetAnimationMode", SMC, (2900, 1700))
+set_default(amodeD, "InAnimationMode", "AnimationBlueprint", "byte", enum="EAnimationMode")
+g.wire(rMeshD, "Mesh", amodeD, "self", exec=False)
+chainD.then(amodeD)
+walkD = bare_call("SetMovementMode", CMC, (3150, 1700))
+set_default(walkD, "NewMovementMode", "MOVE_Walking", "byte", enum="EMovementMode")
+g.wire(rMoveD, "CharacterMovement", walkD, "self", exec=False)
+chainD.then(walkD)
+colD = bare_call("SetActorEnableCollision", ACTOR, (3400, 1700))
+set_default(colD, "bNewActorEnableCollision", "true", "bool")
+g.wire(loopD, "Array Element", colD, "self", exec=False)
+chainD.then(colD)
+reattachD = attach_node((3650, 1700), "")   # re-parent mesh to own capsule
+g.wire(rMeshD, "Mesh", reattachD, "self", exec=False)
+g.wire(rCapD, "CapsuleComponent", reattachD, "Parent", exec=False)
+chainD.then(reattachD)
+setXD = bare_call("K2_SetRelativeTransform", SCENE, pos=(3900, 1700))
+g.wire(rMeshD, "Mesh", setXD, "self", exec=False)
+savedXD = var_self("SavedMeshXform", (3650, 1950))
+g.wire(savedXD, "SavedMeshXform", setXD, "NewTransform", exec=False)
+chainD.then(setXD)
+
 # Seq2.1: update WasMounted = isMounted (every tick)
 setWas = g.var_set("WasMounted", "bool", pos=(1350, 850))
 g.wire(isValid, "ReturnValue", setWas, "WasMounted", exec=False)
@@ -176,9 +309,14 @@ print("inject:", bp.inject(FULL, text, graph_name="EventGraph"))
 # (read instance.MgrVersion; ==2 -> the fixed class; 0/missing -> a cached old class)
 gc = unreal.load_object(None, FULL + "_C")
 if gc:
-    unreal.get_default_object(gc).set_editor_property("MgrVersion", 4)
+    cdo = unreal.get_default_object(gc)
+    cdo.set_editor_property("MgrVersion", 5)
+    anim_obj = unreal.load_object(None, ANIM)
+    if anim_obj:
+        cdo.set_editor_property("MountIdleAnim", anim_obj)
+        print("CDO MountIdleAnim set:", anim_obj.get_name())
     unreal.EditorAssetLibrary.save_asset(PATH)
-    print("CDO MgrVersion=4 stamped")
+    print("CDO MgrVersion=5 stamped")
 txt = bp.export_nodes(bp.graph_nodes(graph_ptr))
 import re
 orphans = re.findall(r'PinName="([^"]+)"[^)]*?bOrphanedPin=True', txt)
