@@ -285,6 +285,28 @@ class Graph(object):
     def branch(self, pos=(0, 0)):
         return self.node("K2Node_IfThenElse", [], base="IfThenElse", pos=pos)
 
+    # ForEachLoop standard-macro instance (ref extracted from the engine StandardMacros)
+    _FOREACH_REF = ('MacroGraphReference=(MacroGraph="/Script/Engine.EdGraph\''
+                    '/Engine/EditorBlueprintResources/StandardMacros.StandardMacros:ForEachLoop\'",'
+                    'GraphBlueprint="/Script/Engine.Blueprint\''
+                    '/Engine/EditorBlueprintResources/StandardMacros.StandardMacros\'",'
+                    'GraphGuid=99DBFD5540A796041F72A5A9DA655026)')
+
+    def foreach(self, elem_cls_path, pos=(0, 0)):
+        """ForEachLoop over an array. Pins: 'Exec'(in), 'Array'(in, array of elem),
+        'LoopBody'(out exec), 'Array Element'(out, elem), 'Array Index'(out int),
+        'Completed'(out exec). The Array + Array Element pins are typed to
+        elem_cls_path (an object class path) so the macro's wildcard resolves on paste."""
+        n = self.node("K2Node_MacroInstance", [self._FOREACH_REF], base="ForEach", pos=pos)
+        arr = n.pin("Array"); arr.dir = "EGPD_Input"
+        arr.set("PinType.PinCategory", '"object"')
+        arr.set("PinType.PinSubCategoryObject", obj_path(elem_cls_path))
+        arr.set("PinType.ContainerType", "Array")
+        el = n.pin("Array Element"); el.dir = "EGPD_Output"
+        el.set("PinType.PinCategory", '"object"')
+        el.set("PinType.PinSubCategoryObject", obj_path(elem_cls_path))
+        return n
+
     # -- typed authoring (avoids the orphan trap; see Pin.typed) --------------
     def typed_input(self, node, name, value, category, sub=None):
         """Set a TYPED default on an input pin of `node` so it merges into the
