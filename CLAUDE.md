@@ -58,6 +58,15 @@ To use:
 > `[Info]` `LogPython` lines back at all, the channel is FINE; read what the payload actually
 > did. Quick liveness check: `python ue_run.py dev/ping.py`.
 
+> **MODULE CACHE:** the editor's Python caches imported modules across `ue_run` calls, so after
+> editing a lib (`bp_ir`/`bp_bridge`/…) a payload that imports it gets the STALE version. Force a
+> reload at the top: `import sys; [sys.modules.pop(m, None) for m in ("bp_ir","bp_bridge","bp_author","bp_compact")]`
+> then import. PIE control: `dev/pie_play.py`/`pie_end.py`/`pie_state.py` (drive Play via
+> LevelEditorSubsystem); `python dev/dismiss_modal.py enter` (host-side) clears a modal that froze
+> the channel. NEVER author/compile a BP while in PIE (breaks live instances). ModController
+> subclasses AUTO-SPAWN on play (DreamworldMods) but BEFORE the player exists — do player-dependent
+> init on tick (guard with a bool), not BeginPlay.
+
 **MCP is NOT needed here.** Claude Code has shell+Python, so it drives the editor directly over
 `remote_execution` — strictly more capable than a fixed MCP tool surface. MCP only earns its place for
 external/sandboxed clients or a guardrailed tool menu.
