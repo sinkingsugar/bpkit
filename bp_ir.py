@@ -297,7 +297,11 @@ class Graph(object):
         'LoopBody'(out exec), 'Array Element'(out, elem), 'Array Index'(out int),
         'Completed'(out exec). The Array + Array Element pins are typed to
         elem_cls_path (an object class path) so the macro's wildcard resolves on paste."""
-        n = self.node("K2Node_MacroInstance", [self._FOREACH_REF], base="ForEach", pos=pos)
+        # ForEachLoop is a WILDCARD macro: without ResolvedWildcardType the Array
+        # input is invalid and the macro never expands (compiles but does nothing).
+        rwt = ('ResolvedWildcardType=(PinCategory="object",PinSubCategoryObject="%s",'
+               'ContainerType=Array)' % obj_path(elem_cls_path))
+        n = self.node("K2Node_MacroInstance", [self._FOREACH_REF, rwt], base="ForEach", pos=pos)
         arr = n.pin("Array"); arr.dir = "EGPD_Input"
         arr.set("PinType.PinCategory", '"object"')
         arr.set("PinType.PinSubCategoryObject", obj_path(elem_cls_path))

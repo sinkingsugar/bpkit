@@ -70,7 +70,9 @@ setInit.pin("Initialized").literal("true")
 g.wire(addAdj, "then", setInit, "execute", exec=True)
 
 # --- Seq.1: mount-transition detect ---
-getMount = g.call("GetMount", CONAN, pos=(750, 600))
+# NB: player.GetMount() is broken (returns None while riding); GetMountInput is the
+# reliable signal (valid when mounted, None when off). See mem player-getmount-broken.
+getMount = g.call("GetMountInput", CONAN, pos=(750, 600))
 g.wire(PLAYER[0], PLAYER[1], getMount, "self", exec=False)
 isValid = g.call("IsValid", KSL, pos=(950, 600))
 g.wire(getMount, "ReturnValue", isValid, "Object", exec=False)
