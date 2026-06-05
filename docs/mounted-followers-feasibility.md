@@ -318,14 +318,21 @@ compiled Blueprint and live-verified (§10 / C1 done).** Remaining to make it a 
       `mod-controller-hook`.)
 - [ ] **Auto-on-dismount reversal.** Covered by C2's dismount-transition branch; polish the
       restore (teleport beside player, re-possess) is C5.
-- [ ] **Multiple followers.** Player should be able to bring several mounted followers. The
-      follower-count cap is a known-easy mod (community mods already raise pet/thrall counts);
-      raise it, then the attach loop already handles N followers. Decide spacing/visual when
-      several ride.
-- [ ] **Assign a horse to a thrall.** Each follower needs its *own* mount to ride, not the
-      player's. Design: spawn/own a horse-pet per thrall and pair them (thrall ↔ its horse),
-      so on player-mount each thrall mounts *its* assigned horse and the horse-pet follows.
-      Needs a pairing/registration data model + UI/command to assign.
+- [x] **Multiple horses (C4 mechanism, live-proven 2026-06-05).** Follower caps are PER GROUP
+      ("Mount" vs "Warrior"/etc.) on the player's `BP_ThrallSystemComponent`. Mounts are their own
+      "Mount" group, so a generic follower-count mod won't cover them. Raise it with
+      `add_thrall_group_limit_adjustment("Mount", N)` (additive/mod-safe) — confirmed live: after
+      raising, the player claims and has **multiple horses following at once**. The mod calls this
+      in the C2 ModController BeginPlay. (Test helper: `dev/c4_setcap.py` — runtime, re-apply per
+      PIE session.) Still TODO: spacing/visual when several ride; the Stow loop already handles N.
+- [ ] **Horse↔follower matching (C3) — DYNAMIC, no persistent pairing (design 2026-06-05).**
+      Each follower needs its own mount, but instead of a pairing registry + assign UI, match at
+      mount time: when the player mounts, that horse is implicitly the player's (`get_rider()==
+      player`); take the player's *other* horse-pets (already following as pets) and **greedily
+      match each to the nearest follower**, then `Stow` that follower onto it. Horses keep
+      following the player as pets; matching is recomputed each mount. Collapses the whole
+      assignment/pairing problem into a nearest-neighbour pass in the C2 manager. Assumes the
+      player owns enough horse-pets (raise the pet cap, C4).
 - [ ] **Per-mount socket/pose tuning.** camel/rhino variants exist; pick the matching
       `A_human_mounted_idle_<MOUNT>` and verify each species' `attachrider` socket.
 - [ ] **Combat behavior.** On ATTACK/aggro: auto-dismount the follower to fight on foot
