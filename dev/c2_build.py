@@ -275,7 +275,12 @@ g.wire(bRiddenA, "else", addSpare, "execute", exec=True)   # mountable AND unrid
 # PASS B: stow each NON-mountable (humanoid) follower onto SpareHorse (replicates C1 build_stow)
 loopB = g.foreach(CONAN, pos=(2400, 750))
 g.wire(getFol, "ReturnValue", loopB, "Array", exec=False)
-g.wire(loopA, "Completed", loopB, "Exec", exec=True)
+# DIAG v9: confirm Pass B begins + how many spares the array holds
+lenSp = arr_fn("Array_Length", ir.obj_path(CONAN), (2150, 600))
+g.wire(arr_var("SpareHorses", ir.obj_path(CONAN), (2150, 800)), "SpareHorses", lenSp, "TargetArray", exec=False)
+pSpares = dbg_int("v9 PASSB begin spares=", lenSp, "ReturnValue", pos=(2150, 600))
+g.wire(loopA, "Completed", pSpares, "execute", exec=True)
+g.wire(pSpares, "then", loopB, "Exec", exec=True)
 mtblB = g.call("IsMountable", CONAN, pos=(2650, 980))
 g.wire(loopB, "Array Element", mtblB, "self", exec=False)
 bMtblB = g.branch(pos=(2650, 750))
@@ -285,12 +290,22 @@ g.wire(mtblB, "ReturnValue", bMtblB, "Condition", exec=False)
 hcGet = g.var_get("HumanoidCounter", "int", pos=(2900, 980))
 arrGetB = arr_var("SpareHorses", ir.obj_path(CONAN), (2900, 1150))
 horse = get_item(arrGetB, "SpareHorses", hcGet, "HumanoidCounter", ir.obj_path(CONAN), (3150, 1050))
-validHorse = g.call("IsValid", KSL, pos=(3150, 820))
-g.wire(horse, "Output", validHorse, "Object", exec=False)
+# GUARD: counter < len(SpareHorses). (IsValid on the GetArrayItem Output pin won't merge via
+# paste -- the bare Object pin doesn't take the special node's output type -- so use an in-range
+# int test instead; GetArrayItem.Output still feeds the mesh getter, which DID connect.)
+lenB = arr_fn("Array_Length", ir.obj_path(CONAN), (3150, 820))
+g.wire(arr_var("SpareHorses", ir.obj_path(CONAN), (3150, 1000)), "SpareHorses", lenB, "TargetArray", exec=False)
+lessB = g.call("Less_IntInt", KML, pos=(3350, 820))
+g.wire(hcGet, "HumanoidCounter", lessB, "A", exec=False)
+g.wire(lenB, "ReturnValue", lessB, "B", exec=False)
 bHasHorse = g.branch(pos=(2950, 750))
-g.wire(bMtblB, "else", bHasHorse, "execute", exec=True)   # NOT mountable -> humanoid
-g.wire(validHorse, "ReturnValue", bHasHorse, "Condition", exec=False)
-pStow = dbg("STOWING humanoid -> spare horse", pos=(3300, 750))
+pHum = dbg("v10 humanoid reached in PassB", pos=(2750, 950))
+g.wire(bMtblB, "else", pHum, "execute", exec=True)   # NOT mountable -> humanoid
+g.wire(pHum, "then", bHasHorse, "execute", exec=True)
+g.wire(lessB, "ReturnValue", bHasHorse, "Condition", exec=False)
+pNo = dbg("v10 NO valid horse for this humanoid", pos=(3300, 1000))
+g.wire(bHasHorse, "else", pNo, "execute", exec=True)
+pStow = dbg("v10 STOWING humanoid -> spare horse", pos=(3300, 750))
 g.wire(bHasHorse, "then", pStow, "execute", exec=True)   # this humanoid gets its OWN spare horse
 
 rMesh = comp_of(loopB, "Array Element", "Mesh", (3550, 950))
@@ -384,13 +399,13 @@ print("inject:", bp.inject(FULL, text, graph_name="EventGraph"))
 gc = unreal.load_object(None, FULL + "_C")
 if gc:
     cdo = unreal.get_default_object(gc)
-    cdo.set_editor_property("MgrVersion", 8)
+    cdo.set_editor_property("MgrVersion", 10)
     anim_obj = unreal.load_object(None, ANIM)
     if anim_obj:
         cdo.set_editor_property("MountIdleAnim", anim_obj)
         print("CDO MountIdleAnim set:", anim_obj.get_name())
     unreal.EditorAssetLibrary.save_asset(PATH)
-    print("CDO MgrVersion=8 stamped")
+    print("CDO MgrVersion=10 stamped")
 txt = bp.export_nodes(bp.graph_nodes(graph_ptr))
 import re
 orphans = re.findall(r'PinName="([^"]+)"[^)]*?bOrphanedPin=True', txt)
