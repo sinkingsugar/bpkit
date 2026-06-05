@@ -195,9 +195,16 @@ g.typed_input(addAdj, "Group", "Mount", "name")
 g.typed_input(addAdj, "Amount", "5", "int")
 g.wire(getTSC, "ReturnValue", addAdj, "self", exec=False)
 g.wire(bInit, "else", addAdj, "execute", exec=True)
-setInit = g.var_set("Initialized", "bool", pos=(1600, 0))
+# ALSO raise the humanoid-follower group ("Warrior") -- thralls live here (counts showed
+# {"Mount":N,"Warrior":N}); cap was 1 so a 2nd thrall swapped out the 1st. Additive/mod-safe.
+addAdjW = g.call("AddThrallGroupLimitAdjustment", TSC, pos=(1600, 0))
+g.typed_input(addAdjW, "Group", "Warrior", "name")
+g.typed_input(addAdjW, "Amount", "5", "int")
+g.wire(getTSC, "ReturnValue", addAdjW, "self", exec=False)
+g.wire(addAdj, "then", addAdjW, "execute", exec=True)
+setInit = g.var_set("Initialized", "bool", pos=(1850, 0))
 setInit.pin("Initialized").literal("true")
-g.wire(addAdj, "then", setInit, "execute", exec=True)
+g.wire(addAdjW, "then", setInit, "execute", exec=True)
 
 # --- Seq.1: mount-transition detect ---
 # NB: player.GetMount() is broken (returns None while riding); GetMountInput is the
@@ -377,13 +384,13 @@ print("inject:", bp.inject(FULL, text, graph_name="EventGraph"))
 gc = unreal.load_object(None, FULL + "_C")
 if gc:
     cdo = unreal.get_default_object(gc)
-    cdo.set_editor_property("MgrVersion", 7)
+    cdo.set_editor_property("MgrVersion", 8)
     anim_obj = unreal.load_object(None, ANIM)
     if anim_obj:
         cdo.set_editor_property("MountIdleAnim", anim_obj)
         print("CDO MountIdleAnim set:", anim_obj.get_name())
     unreal.EditorAssetLibrary.save_asset(PATH)
-    print("CDO MgrVersion=7 stamped")
+    print("CDO MgrVersion=8 stamped")
 txt = bp.export_nodes(bp.graph_nodes(graph_ptr))
 import re
 orphans = re.findall(r'PinName="([^"]+)"[^)]*?bOrphanedPin=True', txt)
