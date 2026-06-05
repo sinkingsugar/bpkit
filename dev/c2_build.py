@@ -227,15 +227,8 @@ bMounted = g.branch(pos=(1600, 500))
 g.wire(bChanged, "then", bMounted, "execute", exec=True)
 g.wire(isValid, "ReturnValue", bMounted, "Condition", exec=False)
 # MOUNT branch -- the real action (2-pass over followers):
-#   bMounted.then -> pVer (MGR VERSION) -> pHit (MOUNT DETECTED)
-#   -> Pass A: find a mountable follower -> SpareHorse
-#   -> Pass B: stow each non-mountable (humanoid) follower onto SpareHorse (C1 attach chain)
-getVer = g.var_get("MgrVersion", "int", pos=(1850, 250))
-pVer = dbg_int("MGR VERSION=", getVer, "MgrVersion", pos=(2050, 250))
-g.wire(bMounted, "then", pVer, "execute", exec=True)
-pHit = dbg("=== MOUNT DETECTED ===", pos=(2050, 60))
-g.wire(pVer, "then", pHit, "execute", exec=True)
-
+#   Pass A: collect unridden spare horses -> SpareHorses[] (stagger each one's follow distance)
+#   Pass B: stow each humanoid onto SpareHorses[counter] (C1 attach chain)
 # shared follower source for both passes (one impure get fans out to both loops)
 getTSC2 = g.call("GetThrallSystemComponent", CONAN, pos=(1850, 420))
 g.wire(PLAYER[0], PLAYER[1], getTSC2, "self", exec=False)
@@ -245,7 +238,7 @@ g.wire(getTSC2, "ReturnValue", getFol, "self", exec=False)
 # clear SpareHorses + reset HumanoidCounter before (re)building the spare list each mount
 clrArr = arr_fn("Array_Clear", ir.obj_path(CONAN), (1900, 250))
 g.wire(arr_var("SpareHorses", ir.obj_path(CONAN), (1900, 470)), "SpareHorses", clrArr, "TargetArray", exec=False)
-g.wire(pHit, "then", clrArr, "execute", exec=True)
+g.wire(bMounted, "then", clrArr, "execute", exec=True)
 setHC0 = g.var_set("HumanoidCounter", "int", pos=(2150, 250)); setHC0.pin("HumanoidCounter").literal("0")
 g.wire(clrArr, "then", setHC0, "execute", exec=True)
 
@@ -271,16 +264,22 @@ g.wire(arr_var("SpareHorses", ir.obj_path(CONAN), (3200, 480)), "SpareHorses", a
 niA = addSpare.pin("NewItem"); niA.dir = "EGPD_Input"; _stype(niA, "object", ir.obj_path(CONAN))
 g.wire(loopA, "Array Element", addSpare, "NewItem", exec=False)
 g.wire(bRiddenA, "else", addSpare, "execute", exec=True)   # mountable AND unridden -> add to SpareHorses
+# SPACING: stagger this horse's follow distance by its loop index (index*180) so the horses
+# trail in a line behind the player instead of all clustering on one follow point.
+idxMul = g.call("Multiply_IntInt", KML, pos=(3450, 480))
+g.wire(loopA, "Array Index", idxMul, "A", exec=False)
+g.typed_input(idxMul, "B", "180", "int")
+idxF = g.call("Conv_IntToDouble", KML, pos=(3650, 480))
+g.wire(idxMul, "ReturnValue", idxF, "InInt", exec=False)
+setDist = g.call("SetAdditionalFollowDistance", CONAN, pos=(3450, 250))
+g.wire(loopA, "Array Element", setDist, "self", exec=False)
+g.wire(idxF, "ReturnValue", setDist, "NewFollowDistance", exec=False)
+g.wire(addSpare, "then", setDist, "execute", exec=True)
 
-# PASS B: stow each NON-mountable (humanoid) follower onto SpareHorse (replicates C1 build_stow)
+# PASS B: stow each NON-mountable (humanoid) follower onto SpareHorses[counter]
 loopB = g.foreach(CONAN, pos=(2400, 750))
 g.wire(getFol, "ReturnValue", loopB, "Array", exec=False)
-# DIAG v9: confirm Pass B begins + how many spares the array holds
-lenSp = arr_fn("Array_Length", ir.obj_path(CONAN), (2150, 600))
-g.wire(arr_var("SpareHorses", ir.obj_path(CONAN), (2150, 800)), "SpareHorses", lenSp, "TargetArray", exec=False)
-pSpares = dbg_int("v9 PASSB begin spares=", lenSp, "ReturnValue", pos=(2150, 600))
-g.wire(loopA, "Completed", pSpares, "execute", exec=True)
-g.wire(pSpares, "then", loopB, "Exec", exec=True)
+g.wire(loopA, "Completed", loopB, "Exec", exec=True)
 mtblB = g.call("IsMountable", CONAN, pos=(2650, 980))
 g.wire(loopB, "Array Element", mtblB, "self", exec=False)
 bMtblB = g.branch(pos=(2650, 750))
@@ -299,19 +298,14 @@ lessB = g.call("Less_IntInt", KML, pos=(3350, 820))
 g.wire(hcGet, "HumanoidCounter", lessB, "A", exec=False)
 g.wire(lenB, "ReturnValue", lessB, "B", exec=False)
 bHasHorse = g.branch(pos=(2950, 750))
-pHum = dbg("v10 humanoid reached in PassB", pos=(2750, 950))
-g.wire(bMtblB, "else", pHum, "execute", exec=True)   # NOT mountable -> humanoid
-g.wire(pHum, "then", bHasHorse, "execute", exec=True)
+g.wire(bMtblB, "else", bHasHorse, "execute", exec=True)   # NOT mountable -> humanoid
 g.wire(lessB, "ReturnValue", bHasHorse, "Condition", exec=False)
-pNo = dbg("v10 NO valid horse for this humanoid", pos=(3300, 1000))
-g.wire(bHasHorse, "else", pNo, "execute", exec=True)
-pStow = dbg("v10 STOWING humanoid -> spare horse", pos=(3300, 750))
-g.wire(bHasHorse, "then", pStow, "execute", exec=True)   # this humanoid gets its OWN spare horse
+# bHasHorse.then -> stow chain (counter in range -> this humanoid gets its OWN spare horse)
 
 rMesh = comp_of(loopB, "Array Element", "Mesh", (3550, 950))
 mMesh = comp_of(horse, "Output", "Mesh", (3550, 1150))   # mount = SpareHorses[counter]
 rMove = comp_of(loopB, "Array Element", "CharacterMovement", (3550, 1350))
-chain = Chain(pStow, "then")
+chain = Chain(bHasHorse, "then")
 # save rider mesh's relative-to-capsule xform BEFORE reparenting (restore uses it)
 getX = bare_call("GetRelativeTransform", SCENE, pos=(3800, 1350))
 gxp = getX.pin("ReturnValue"); gxp.dir = "EGPD_Output"; type_struct(gxp, "/Script/CoreUObject.Transform")
@@ -348,11 +342,9 @@ setHC = g.var_set("HumanoidCounter", "int", pos=(5300, 750)); g.wire(addHC, "Ret
 chain.then(setHC)
 
 # DISMOUNT branch: restore each humanoid follower (reverse of stow) -- replicates C1 build_restore
-pDis = dbg("FOLLOWERS: DISMOUNT (restoring)", pos=(1850, 1700))
-g.wire(bMounted, "else", pDis, "execute", exec=True)
 loopD = g.foreach(CONAN, pos=(2100, 1700))
 g.wire(getFol, "ReturnValue", loopD, "Array", exec=False)
-g.wire(pDis, "then", loopD, "Exec", exec=True)
+g.wire(bMounted, "else", loopD, "Exec", exec=True)
 mtblD = g.call("IsMountable", CONAN, pos=(2350, 1930))
 g.wire(loopD, "Array Element", mtblD, "self", exec=False)
 bMtblD = g.branch(pos=(2350, 1700))
@@ -399,13 +391,13 @@ print("inject:", bp.inject(FULL, text, graph_name="EventGraph"))
 gc = unreal.load_object(None, FULL + "_C")
 if gc:
     cdo = unreal.get_default_object(gc)
-    cdo.set_editor_property("MgrVersion", 10)
+    cdo.set_editor_property("MgrVersion", 11)
     anim_obj = unreal.load_object(None, ANIM)
     if anim_obj:
         cdo.set_editor_property("MountIdleAnim", anim_obj)
         print("CDO MountIdleAnim set:", anim_obj.get_name())
     unreal.EditorAssetLibrary.save_asset(PATH)
-    print("CDO MgrVersion=10 stamped")
+    print("CDO MgrVersion=11 stamped")
 txt = bp.export_nodes(bp.graph_nodes(graph_ptr))
 import re
 orphans = re.findall(r'PinName="([^"]+)"[^)]*?bOrphanedPin=True', txt)
