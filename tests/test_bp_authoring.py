@@ -16,12 +16,17 @@ for _m in ("bp_ir", "bp_bridge", "bp_author", "bp_compact"):
     sys.modules.pop(_m, None)
 import unreal
 import re
+import time
 import bp_bridge as bp
 import bp_ir as ir
 
 BEL = unreal.BlueprintEditorLibrary
 EAS = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
-PKG = "/Game/_Scratch/_tests"
+# Unique per-run package: deleting + recreating a BP of the SAME name in a
+# long-lived editor session triggers stale generated-class collisions (custom
+# events get renamed, spawn loads the old class) -> false failures. A fresh name
+# each run sidesteps that, so the suite is reliable WITHOUT an editor restart.
+PKG = "/Game/_Scratch/_tests/run_%d" % int(time.time())
 KML = "/Script/Engine.KismetMathLibrary"
 
 _results = []
@@ -29,11 +34,11 @@ def expect(name, ok, detail=""):
     _results.append((name, bool(ok), detail))
 
 # --- helpers ----------------------------------------------------------------
-def fresh_bp(name):
+def fresh_bp(name, parent=None):
     path = PKG + "/" + name
     if unreal.EditorAssetLibrary.does_asset_exist(path):
         unreal.EditorAssetLibrary.delete_asset(path)
-    obj, _ = bp.scratch_blueprint(pkg=PKG, name=name)
+    obj, _ = bp.scratch_blueprint(pkg=PKG, name=name, parent=parent)
     return obj, path + "." + name
 
 def inject(full, graph):
@@ -120,12 +125,16 @@ def test_foreach_empty_completes():
     EAS.destroy_actor(inst)
 
 def test_typed_enum_default_merges():
-    """A typed enum default must merge onto the canonical pin (no orphan, value set)."""
-    obj, full = fresh_bp("BP_T_TypedDefault")
+    """A typed enum default must merge onto the canonical pin (no orphan, value set)
+    AND the host BP must still compile clean -- a Character so SetAnimationMode has a
+    valid SkeletalMeshComponent ('Mesh') target wired into its self pin."""
+    obj, full = fresh_bp("BP_T_TypedDefault", parent=unreal.Character)
     g = ir.Graph("EventGraph")
     ev = g.event("ReceiveBeginPlay")
-    # SetAnimationMode takes an EAnimationMode byte pin
+    # SetAnimationMode takes an EAnimationMode byte pin; target it at the Character's Mesh
+    mesh = g.var_get("Mesh", "object", ir.obj_path("/Script/Engine.SkeletalMeshComponent"))
     n = g.call("SetAnimationMode", "/Script/Engine.SkeletalMeshComponent")
+    g.wire(mesh, "Mesh", n, "self", exec=False)
     g.typed_input(n, "InAnimationMode", "AnimationSingleNode", "byte",
                   ir.enum_path("/Script/Engine.EAnimationMode"))
     g.wire(ev, "then", n, "execute", exec=True)
@@ -136,16 +145,29 @@ def test_typed_enum_default_merges():
     expect("typed-default: value present on canonical pin",
            'DefaultValue="AnimationSingleNode"' in txt and "bOrphanedPin=True" not in
            [l for l in txt.splitlines() if "InAnimationMode" in l and 'DefaultValue="AnimationSingleNode"' in l][0])
+    expect("typed-default: compiles clean", not compile_errors(full))
 
 # --- runner -----------------------------------------------------------------
 TESTS = [test_foreach_iterates, test_foreach_empty_completes, test_typed_enum_default_merges]
 print("=== BP authoring unit tests ===")
-for t in TESTS:
-    try:
-        t()
-    except Exception as e:
-        import traceback
-        expect(t.__name__ + " (raised)", False, traceback.format_exc().splitlines()[-1][:120])
+try:
+    for t in TESTS:
+        try:
+            t()
+        except Exception as e:
+            import traceback
+            expect(t.__name__ + " (raised)", False, traceback.format_exc().splitlines()[-1][:120])
+finally:
+    # ALWAYS delete the throwaway package -- a left-behind non-compiling test BP
+    # gates every PIE start ("blueprints have unresolved compiler errors"). Never again.
+    eal = unreal.EditorAssetLibrary
+    if eal.does_directory_exist(PKG):
+        for a in list(eal.list_assets(PKG, recursive=True, include_folder=False)):
+            try: eal.delete_asset(a.split(".")[0])
+            except Exception: pass
+        eal.delete_directory(PKG)
+    print("cleanup: deleted", PKG)
+
 passed = sum(1 for _, ok, _ in _results if ok)
 for name, ok, detail in _results:
     print("  [%s] %s%s" % ("PASS" if ok else "FAIL", name, "  -- " + detail if detail and not ok else ""))
