@@ -208,9 +208,18 @@ g.wire(loopA, "Array Element", mtblA, "self", exec=False)
 bMtblA = g.branch(pos=(2650, 250))
 g.wire(loopA, "LoopBody", bMtblA, "execute", exec=True)
 g.wire(mtblA, "ReturnValue", bMtblA, "Condition", exec=False)
-setSpare = var_set_m("SpareHorse", (2950, 250))
+# EXCLUDE the horse the player is riding: a spare horse has NO rider (GetRider invalid).
+# The player's mount has the player as its rider, so it fails this and is skipped.
+getRiderA = g.call("GetRider", CONAN, pos=(2900, 480))
+g.wire(loopA, "Array Element", getRiderA, "self", exec=False)
+ridValA = g.call("IsValid", KSL, pos=(3100, 480))
+g.wire(getRiderA, "ReturnValue", ridValA, "Object", exec=False)
+bRiddenA = g.branch(pos=(2950, 250))
+g.wire(bMtblA, "then", bRiddenA, "execute", exec=True)
+g.wire(ridValA, "ReturnValue", bRiddenA, "Condition", exec=False)
+setSpare = var_set_m("SpareHorse", (3200, 250))
 g.wire(loopA, "Array Element", setSpare, "SpareHorse", exec=False)
-g.wire(bMtblA, "then", setSpare, "execute", exec=True)   # mountable -> remember as the spare horse
+g.wire(bRiddenA, "else", setSpare, "execute", exec=True)   # mountable AND not-ridden -> spare horse
 
 # PASS B: stow each NON-mountable (humanoid) follower onto SpareHorse (replicates C1 build_stow)
 loopB = g.foreach(CONAN, pos=(2400, 750))
@@ -310,13 +319,13 @@ print("inject:", bp.inject(FULL, text, graph_name="EventGraph"))
 gc = unreal.load_object(None, FULL + "_C")
 if gc:
     cdo = unreal.get_default_object(gc)
-    cdo.set_editor_property("MgrVersion", 5)
+    cdo.set_editor_property("MgrVersion", 6)
     anim_obj = unreal.load_object(None, ANIM)
     if anim_obj:
         cdo.set_editor_property("MountIdleAnim", anim_obj)
         print("CDO MountIdleAnim set:", anim_obj.get_name())
     unreal.EditorAssetLibrary.save_asset(PATH)
-    print("CDO MgrVersion=5 stamped")
+    print("CDO MgrVersion=6 stamped")
 txt = bp.export_nodes(bp.graph_nodes(graph_ptr))
 import re
 orphans = re.findall(r'PinName="([^"]+)"[^)]*?bOrphanedPin=True', txt)
