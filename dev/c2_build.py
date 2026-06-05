@@ -31,7 +31,10 @@ bp_obj, _ = bp.scratch_blueprint(pkg=PKG, name=NAME, parent=unreal.ModController
 print("manager BP:", FULL)
 boolt = unreal.BlueprintEditorLibrary.get_basic_type_by_name("bool")
 for vn in ("Initialized", "WasMounted"):
-    unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, vn, boolt)  # no-ops if exists
+    unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, vn, boolt)
+# build-version tag (CDO default set below) to detect which class actually spawns
+unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, "MgrVersion",
+    unreal.BlueprintEditorLibrary.get_basic_type_by_name("int"))  # no-ops if exists
 
 g = ir.Graph("EventGraph")
 
@@ -117,6 +120,14 @@ text = g.render()
 bp_ptr, graph_ptr = bp.find_graph(FULL, "EventGraph")
 print("cleared:", bp.clear_graph(bp_ptr, graph_ptr))
 print("inject:", bp.inject(FULL, text, graph_name="EventGraph"))
+
+# stamp the build version on the CDO so we can tell which class actually spawns
+# (read instance.MgrVersion; ==2 -> the fixed class; 0/missing -> a cached old class)
+gc = unreal.load_object(None, FULL + "_C")
+if gc:
+    unreal.get_default_object(gc).set_editor_property("MgrVersion", 2)
+    unreal.EditorAssetLibrary.save_asset(PATH)
+    print("CDO MgrVersion=2 stamped")
 txt = bp.export_nodes(bp.graph_nodes(graph_ptr))
 import re
 orphans = re.findall(r'PinName="([^"]+)"[^)]*?bOrphanedPin=True', txt)

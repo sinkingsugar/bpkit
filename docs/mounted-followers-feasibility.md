@@ -312,17 +312,32 @@ compiled Blueprint and live-verified (§10 / C1 done).** Remaining to make it a 
       node-graphs on `BP_MF_Recipe`, injected from outside the editor, compiled clean, and
       live-verified in PIE: `Stow` snaps a dancer's mesh onto the horse `attachrider` socket
       (distance 0.0); `Restore` detaches + restores `MOVE_Walking`. See §10.
-- [~] **C2 — Polling manager** (`BP_MountedFollowerManager : DreamworldMods.ModController`).
-      Live-verified: Step A — auto-spawns (framework picks up any ModController subclass) +
-      auto-raises Mount cap on tick (guarded by an `Initialized` bool, since auto-spawn precedes
-      player spawn so BeginPlay is too early). Step B — detects mount/dismount transitions
-      (IsValid(GetMount) vs WasMounted). Step C foundation — `ForEach` (bp_ir.foreach) over
-      `GetFollowingThrallCharacters`, filters out `IsMount`. **Remaining (mechanical, no unknowns):**
-      per non-mount follower → spawn `BP_MF_Recipe`, set Rider/Mount, `Stow`, track for `Restore`
-      on dismount; nearest-match spare "Mount"-group horses (minus ridden). **Framework caches the
-      ModController class for the editor SESSION — an editor restart is needed for PIE to spawn a
-      rebuilt manager (Play restart alone keeps the cached class).** Mid-mount log spam is a
-      Conan-side bug (BasePlayerChar CheckRiding/camera SM + TryPerformFatality), not ours.
+- [~] **C2 — Polling manager** (`BP_MountedFollowerManager : DreamworldMods.ModController`,
+      authored by `dev/c2_build.py`). **State as of 2026-06-05 (resume here):**
+      - Auto-spawns (framework picks up any ModController subclass) + auto-raises Mount cap on
+        tick, guarded by `Initialized` bool (auto-spawn precedes player spawn, so BeginPlay too early).
+      - Detects mount/dismount via `IsValid(GetMountInput(player))` vs a `WasMounted` bool. NB:
+        `player.GetMount()` is BROKEN (always None while riding) — use `GetMountInput`. (mem
+        `player-getmount-broken`.) Dismount transition fires reliably; caveat: GetMountInput can be
+        pending-kill at the exact transition tick.
+      - On MOUNT: `ForEach` (bp_ir.foreach) over `GetFollowingThrallCharacters`, branch on `IsMount`,
+        currently just **PrintString "STOW A FOLLOWER"** per non-mount follower (placeholder).
+      - **TWO bugs found+fixed+unit-tested (`tests/test_bp_authoring.py`, 7/7):** (1) GetMount→GetMountInput;
+        (2) `bp_ir.foreach` produced an INERT loop (compiled clean, never ran) — needed a
+        `ResolvedWildcardType` header + the array source exec-wired if impure. Now the loop genuinely
+        iterates (LoopBody fires per element, proven). (mem `bp-loop-authoring`.)
+      - **BLOCKER:** the framework caches the ModController class for the editor SESSION, so PIE keeps
+        spawning the PRE-FIX cached class; the summon-trick (`dev/c2_refresh_mgr.py`) appears to grab
+        the cached copy too. So the integrated manager has NOT yet been seen to STOW in PIE. **An
+        editor restart is the reliable way to load the rebuilt manager.** `MgrVersion` CDO tag (==2)
+        added to `dev/c2_build.py` to detect which class actually spawns (read `instance.MgrVersion`).
+      - **NEXT STEPS:** (a) confirm whether summon gives the fixed class via MgrVersion (decides
+        iterate-via-summon vs must-restart); (b) replace the STOW placeholder with the real
+        spawn-`BP_MF_Recipe`+set Rider/Mount/MountIdleAnim+`Stow`, tracked in an array for `Restore`
+        on dismount; (c) nearest-match spare "Mount"-group horses (minus ridden, via `get_rider()`);
+        (d) verify in PIE after a restart. Diagnostics: `dev/c2_debug_state.py`,
+        `c2_debug_mounted.py`, `read_log.py`. Mid-mount log spam = Conan-side (BasePlayerChar
+        CheckRiding/camera SM + TryPerformFatality), not ours.
 - [ ] **Auto-on-dismount reversal.** Covered by C2's dismount-transition branch; polish the
       restore (teleport beside player, re-possess) is C5.
 - [x] **Multiple horses (C4 mechanism, live-proven 2026-06-05).** Follower caps are PER GROUP
