@@ -312,6 +312,14 @@ compiled Blueprint and live-verified (§10 / C1 done).** Remaining to make it a 
       node-graphs on `BP_MF_Recipe`, injected from outside the editor, compiled clean, and
       live-verified in PIE: `Stow` snaps a dancer's mesh onto the horse `attachrider` socket
       (distance 0.0); `Restore` detaches + restores `MOVE_Walking`. See §10.
+- [x] **C2 logic chain — PROVEN LIVE 2026-06-05.** Full mount→detect→iterate→filter→act chain
+      fires in PIE: `MGR VERSION=4` (fixed class spawns; rebuilds take effect with NO editor restart
+      — the framework cache was never the real blocker), `MOUNT DETECTED` (via GetMountInput), ForEach
+      iterates all followers (`followers seen=3`), `IsMountable` filter skips the 2 horses and fires
+      `STOW A FOLLOWER` for the lone humanoid entertainer. Key discriminator: **IsMountable** (stable
+      creature-type, true=horse) NOT IsMount (mount-STATE; flips, true-for-all at mount time). NB UE
+      `LogBlueprintUserMessages` dedups identical strings -> make per-run debug strings unique (embed a
+      counter/version) for full visibility. Remaining: replace the STOW *print* with the real action.
 - [~] **C2 — Polling manager** (`BP_MountedFollowerManager : DreamworldMods.ModController`,
       authored by `dev/c2_build.py`). **State as of 2026-06-05 (resume here):**
       - Auto-spawns (framework picks up any ModController subclass) + auto-raises Mount cap on

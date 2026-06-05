@@ -146,13 +146,15 @@ addCnt = g.call("Add_IntInt", KML, pos=(3100, 430)); g.wire(getCnt, "DbgCount", 
 g.typed_input(addCnt, "B", "1", "int")
 setCnt = g.var_set("DbgCount", "int", pos=(3300, 250)); g.wire(addCnt, "ReturnValue", setCnt, "DbgCount", exec=False)
 g.wire(pBody, "then", setCnt, "execute", exec=True)
-isMount = g.call("IsMount", CONAN, pos=(3550, 700))
-g.wire(loop, "Array Element", isMount, "self", exec=False)
-bIsMount = g.branch(pos=(3550, 450))
-g.wire(setCnt, "then", bIsMount, "execute", exec=True)
-g.wire(isMount, "ReturnValue", bIsMount, "Condition", exec=False)
+# IsMountable (NOT IsMount): IsMount is mount-STATE (flips, true-for-all at mount time);
+# IsMountable is the stable creature-type -> True for horses, False for humanoid thralls.
+isMtbl = g.call("IsMountable", CONAN, pos=(3550, 700))
+g.wire(loop, "Array Element", isMtbl, "self", exec=False)
+bIsMtbl = g.branch(pos=(3550, 450))
+g.wire(setCnt, "then", bIsMtbl, "execute", exec=True)
+g.wire(isMtbl, "ReturnValue", bIsMtbl, "Condition", exec=False)
 pStow = dbg("STOW A FOLLOWER", pos=(3800, 420))
-g.wire(bIsMount, "else", pStow, "execute", exec=True)   # not a mount -> a follower to stow
+g.wire(bIsMtbl, "else", pStow, "execute", exec=True)   # NOT mountable -> humanoid -> stow it
 # at completion print the count (followers seen). LOOP COMPLETED firing at all = loop ran.
 getCntF = g.var_get("DbgCount", "int", pos=(2900, 60))
 pDone = dbg_int("=== LOOP COMPLETED, followers seen=", getCntF, "DbgCount", pos=(3150, 60))
@@ -174,9 +176,9 @@ print("inject:", bp.inject(FULL, text, graph_name="EventGraph"))
 # (read instance.MgrVersion; ==2 -> the fixed class; 0/missing -> a cached old class)
 gc = unreal.load_object(None, FULL + "_C")
 if gc:
-    unreal.get_default_object(gc).set_editor_property("MgrVersion", 3)
+    unreal.get_default_object(gc).set_editor_property("MgrVersion", 4)
     unreal.EditorAssetLibrary.save_asset(PATH)
-    print("CDO MgrVersion=3 stamped")
+    print("CDO MgrVersion=4 stamped")
 txt = bp.export_nodes(bp.graph_nodes(graph_ptr))
 import re
 orphans = re.findall(r'PinName="([^"]+)"[^)]*?bOrphanedPin=True', txt)
