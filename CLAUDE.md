@@ -46,6 +46,14 @@ To use:
 - Smoke test: `examples/smoketest.py` (prints engine ver + logs into the editor).
 - API probe:  `dev/ue_probe_bp.py` (provenance; targets the pre-refactor API).
 
+> **WHICH PYTHON (fresh shells bite on this).** Bare `python` on this box hits the Windows
+> **Store app-execution alias** and dies with `Python was not found; ... Microsoft Store` — there
+> is NO system Python and the Store is deliberately OFF. ALWAYS invoke the **bundled** interpreter
+> by full path for BOTH `ue_run.py` and standalone clients:
+> `& 'C:\Program Files\Epic Games\CEUE5Devkit\Engine\Binaries\ThirdParty\Python3\Win64\python.exe' ue_run.py <payload>`
+> (`ue_run.py` self-inserts the plugin's `Content\Python` onto `sys.path`, so `remote_execution`
+> imports without extra setup.) In Bash, set `PY="C:/Program Files/.../python.exe"` once and use `"$PY"`.
+
 > **INVOCATION GOTCHA (cost an hour of false "channel down" debugging 2026-06-05).**
 > Two DIFFERENT usage patterns — do not cross them:
 > - `python examples/smoketest.py` — run a **standalone client DIRECTLY**. It opens its
