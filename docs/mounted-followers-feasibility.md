@@ -312,10 +312,17 @@ compiled Blueprint and live-verified (§10 / C1 done).** Remaining to make it a 
       node-graphs on `BP_MF_Recipe`, injected from outside the editor, compiled clean, and
       live-verified in PIE: `Stow` snaps a dancer's mesh onto the horse `attachrider` socket
       (distance 0.0); `Restore` detaches + restores `MOVE_Walking`. See §10.
-- [ ] **C2 — Polling manager.** A `DreamworldMods.ModController` subclass (Actor w/ Tick) that
-      polls each player's `get_mount()`/`get_rider()` and fires `Stow` on mount-transition,
-      `Restore` on dismount-transition. (Decided over event-override; no pawn edit. mem
-      `mod-controller-hook`.)
+- [~] **C2 — Polling manager** (`BP_MountedFollowerManager : DreamworldMods.ModController`).
+      Live-verified: Step A — auto-spawns (framework picks up any ModController subclass) +
+      auto-raises Mount cap on tick (guarded by an `Initialized` bool, since auto-spawn precedes
+      player spawn so BeginPlay is too early). Step B — detects mount/dismount transitions
+      (IsValid(GetMount) vs WasMounted). Step C foundation — `ForEach` (bp_ir.foreach) over
+      `GetFollowingThrallCharacters`, filters out `IsMount`. **Remaining (mechanical, no unknowns):**
+      per non-mount follower → spawn `BP_MF_Recipe`, set Rider/Mount, `Stow`, track for `Restore`
+      on dismount; nearest-match spare "Mount"-group horses (minus ridden). **Framework caches the
+      ModController class for the editor SESSION — an editor restart is needed for PIE to spawn a
+      rebuilt manager (Play restart alone keeps the cached class).** Mid-mount log spam is a
+      Conan-side bug (BasePlayerChar CheckRiding/camera SM + TryPerformFatality), not ours.
 - [ ] **Auto-on-dismount reversal.** Covered by C2's dismount-transition branch; polish the
       restore (teleport beside player, re-possess) is C5.
 - [x] **Multiple horses (C4 mechanism, live-proven 2026-06-05).** Follower caps are PER GROUP
