@@ -23,6 +23,8 @@ TSC = "/Script/ConanSandbox.ThrallSystemComponent"
 GS = "/Script/Engine.GameplayStatics"
 KSL = "/Script/Engine.KismetSystemLibrary"
 KML = "/Script/Engine.KismetMathLibrary"
+KSTR = "/Script/Engine.KismetStringLibrary"
+KARR = "/Script/Engine.KismetArrayLibrary"
 
 # edit in place (reuse if present) -- deleting+recreating leaves a stale redirector
 # that blocks recreate; the manager uses override EVENTS (not custom events) so
@@ -33,8 +35,9 @@ boolt = unreal.BlueprintEditorLibrary.get_basic_type_by_name("bool")
 for vn in ("Initialized", "WasMounted"):
     unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, vn, boolt)
 # build-version tag (CDO default set below) to detect which class actually spawns
-unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, "MgrVersion",
-    unreal.BlueprintEditorLibrary.get_basic_type_by_name("int"))  # no-ops if exists
+intt = unreal.BlueprintEditorLibrary.get_basic_type_by_name("int")
+for vn in ("MgrVersion", "DbgCount"):
+    unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, vn, intt)  # no-ops if exists
 
 g = ir.Graph("EventGraph")
 
@@ -44,6 +47,23 @@ def cast_node(target, pos):
 
 def seq_node(pos):
     return g.node("K2Node_ExecutionSequence", [], base="Seq", pos=pos)
+
+def dbg(msg, pos):
+    """A PrintString of a literal; returns the node (wire exec in/out via execute/then)."""
+    p = g.call("PrintString", KSL, pos=pos)
+    g.typed_input(p, "InString", msg, "string")
+    return p
+
+def dbg_int(label, src_node, src_pin, pos):
+    """Print '<label><int>' by Conv_IntToString + Concat_StrStr -> PrintString."""
+    conv = g.call("Conv_IntToString", KSTR, pos=(pos[0], pos[1] + 140))
+    g.wire(src_node, src_pin, conv, "InInt", exec=False)
+    cat = g.call("Concat_StrStr", KSTR, pos=(pos[0], pos[1] + 280))
+    g.typed_input(cat, "A", label, "string")
+    g.wire(conv, "ReturnValue", cat, "B", exec=False)
+    p = g.call("PrintString", KSL, pos=pos)
+    g.wire(cat, "ReturnValue", p, "InString", exec=False)
+    return p
 
 tick = g.event("ReceiveTick")
 getP = g.call("GetPlayerCharacter", GS, pos=(0, 350))
@@ -92,24 +112,53 @@ g.wire(neq, "ReturnValue", bChanged, "Condition", exec=False)
 bMounted = g.branch(pos=(1600, 500))
 g.wire(bChanged, "then", bMounted, "execute", exec=True)
 g.wire(isValid, "ReturnValue", bMounted, "Condition", exec=False)
-# MOUNT: ForEach the player's followers, print for each non-mount (a follower to stow)
-getTSC2 = g.call("GetThrallSystemComponent", CONAN, pos=(1850, 350))
+# MOUNT branch -- VERBOSE DEBUG. Exec chain on mount:
+#   bMounted.then -> pVer -> pHit -> pCount -> loop.Exec
+#   loop.LoopBody -> pBody -> bIsMount(IsMount?) -> else: pStow
+#   loop.Completed -> pDone
+# Reading the prints: pHit always (mount entered). Then:
+#   pCount=0 + pDone, no pBody     -> follower source EMPTY at this tick
+#   pCount>0 but NO pBody/pDone    -> loop INERT (stale class / RWT missing)  <-- the cache bug
+#   pBody xN but no pStow          -> all followers report IsMount=true (filter)
+#   pBody + pStow                  -> WORKING
+getVer = g.var_get("MgrVersion", "int", pos=(1850, 250))
+pVer = dbg_int("MGR VERSION=", getVer, "MgrVersion", pos=(2050, 250))
+g.wire(bMounted, "then", pVer, "execute", exec=True)
+pHit = dbg("=== MOUNT DETECTED ===", pos=(2050, 60))
+g.wire(pVer, "then", pHit, "execute", exec=True)
+
+getTSC2 = g.call("GetThrallSystemComponent", CONAN, pos=(1850, 420))
 g.wire(PLAYER[0], PLAYER[1], getTSC2, "self", exec=False)
-getFol = g.call("GetFollowingThrallCharacters", TSC, pos=(2100, 350))
+getFol = g.call("GetFollowingThrallCharacters", TSC, pos=(2100, 420))
 g.wire(getTSC2, "ReturnValue", getFol, "self", exec=False)
-loop = g.foreach(CONAN, pos=(2350, 420))
+# reset DbgCount=0 before the loop (counts followers seen, no wildcard Array_Length)
+setCnt0 = g.var_set("DbgCount", "int", pos=(2350, 250)); setCnt0.pin("DbgCount").literal("0")
+g.wire(pHit, "then", setCnt0, "execute", exec=True)
+
+loop = g.foreach(CONAN, pos=(2650, 420))
 g.wire(getFol, "ReturnValue", loop, "Array", exec=False)
-g.wire(bMounted, "then", loop, "Exec", exec=True)
-isMount = g.call("IsMount", CONAN, pos=(2600, 620))
+g.wire(setCnt0, "then", loop, "Exec", exec=True)
+pBody = dbg("LOOP BODY (a follower)", pos=(2900, 250))
+g.wire(loop, "LoopBody", pBody, "execute", exec=True)
+# DbgCount += 1
+getCnt = g.var_get("DbgCount", "int", pos=(2900, 430))
+addCnt = g.call("Add_IntInt", KML, pos=(3100, 430)); g.wire(getCnt, "DbgCount", addCnt, "A", exec=False)
+g.typed_input(addCnt, "B", "1", "int")
+setCnt = g.var_set("DbgCount", "int", pos=(3300, 250)); g.wire(addCnt, "ReturnValue", setCnt, "DbgCount", exec=False)
+g.wire(pBody, "then", setCnt, "execute", exec=True)
+isMount = g.call("IsMount", CONAN, pos=(3550, 700))
 g.wire(loop, "Array Element", isMount, "self", exec=False)
-bIsMount = g.branch(pos=(2800, 450))
-g.wire(loop, "LoopBody", bIsMount, "execute", exec=True)
+bIsMount = g.branch(pos=(3550, 450))
+g.wire(setCnt, "then", bIsMount, "execute", exec=True)
 g.wire(isMount, "ReturnValue", bIsMount, "Condition", exec=False)
-pStow = g.call("PrintString", KSL, pos=(3050, 420))
-g.typed_input(pStow, "InString", "STOW A FOLLOWER", "string")
+pStow = dbg("STOW A FOLLOWER", pos=(3800, 420))
 g.wire(bIsMount, "else", pStow, "execute", exec=True)   # not a mount -> a follower to stow
-pDis = g.call("PrintString", KSL, pos=(1850, 650))
-g.typed_input(pDis, "InString", "FOLLOWERS: DISMOUNT", "string")
+# at completion print the count (followers seen). LOOP COMPLETED firing at all = loop ran.
+getCntF = g.var_get("DbgCount", "int", pos=(2900, 60))
+pDone = dbg_int("=== LOOP COMPLETED, followers seen=", getCntF, "DbgCount", pos=(3150, 60))
+g.wire(loop, "Completed", pDone, "execute", exec=True)
+
+pDis = dbg("FOLLOWERS: DISMOUNT", pos=(1850, 950))
 g.wire(bMounted, "else", pDis, "execute", exec=True)
 # Seq2.1: update WasMounted = isMounted (every tick)
 setWas = g.var_set("WasMounted", "bool", pos=(1350, 850))
@@ -125,10 +174,32 @@ print("inject:", bp.inject(FULL, text, graph_name="EventGraph"))
 # (read instance.MgrVersion; ==2 -> the fixed class; 0/missing -> a cached old class)
 gc = unreal.load_object(None, FULL + "_C")
 if gc:
-    unreal.get_default_object(gc).set_editor_property("MgrVersion", 2)
+    unreal.get_default_object(gc).set_editor_property("MgrVersion", 3)
     unreal.EditorAssetLibrary.save_asset(PATH)
-    print("CDO MgrVersion=2 stamped")
+    print("CDO MgrVersion=3 stamped")
 txt = bp.export_nodes(bp.graph_nodes(graph_ptr))
 import re
 orphans = re.findall(r'PinName="([^"]+)"[^)]*?bOrphanedPin=True', txt)
 print("ORPHANS:", len(orphans), orphans if orphans else "(clean)")
+
+# REAL compile verification -- do NOT trust inject's compiled flag (it means "compile
+# ran", not "no errors"). Scan the compiled graph per-node for unresolved wildcard pins
+# (e.g. an Array_Length whose type never got implied -> "Target Array is undetermined")
+# and for compiler-stamped error markers. The ForEach macro legitimately carries wildcard
+# pins (resolved via its ResolvedWildcardType header) so it's excluded.
+problems = []
+for blk in re.split(r'(?=Begin Object Class=)', txt):
+    if not blk.strip():
+        continue
+    name = (re.search(r'Name="([^"]+)"', blk) or [None, "?"])[1]
+    is_macro = "K2Node_MacroInstance" in blk  # ForEach etc.: wildcard is expected/resolved
+    for pin in re.findall(r'CustomProperties Pin \((.*)\)', blk):
+        pn = (re.search(r'PinName="([^"]+)"', pin) or [None, "?"])[1]
+        if 'PinCategory="wildcard"' in pin and not is_macro:
+            problems.append("WILDCARD unresolved: %s.%s" % (name, pn))
+    if "ErrorMsg=" in blk or 'bHasCompilerMessage=True' in blk:
+        problems.append("ERROR-MARKED node: %s" % name)
+print("COMPILE PROBLEMS:", len(problems))
+for p in problems:
+    print("  !!", p)
+print("BUILD OK" if not problems and not orphans else "BUILD HAS ISSUES -- DO NOT PLAY YET")
