@@ -352,14 +352,21 @@ compiled Blueprint and live-verified (§10 / C1 done).** Remaining to make it a 
       raising, the player claims and has **multiple horses following at once**. The mod calls this
       in the C2 ModController BeginPlay. (Test helper: `dev/c4_setcap.py` — runtime, re-apply per
       PIE session.) Still TODO: spacing/visual when several ride; the Stow loop already handles N.
-- [ ] **Horse↔follower matching (C3) — DYNAMIC, no persistent pairing (design 2026-06-05).**
-      Each follower needs its own mount, but instead of a pairing registry + assign UI, match at
-      mount time: when the player mounts, that horse is implicitly the player's (`get_rider()==
-      player`); take the player's *other* horse-pets (already following as pets) and **greedily
-      match each to the nearest follower**, then `Stow` that follower onto it. Horses keep
-      following the player as pets; matching is recomputed each mount. Collapses the whole
-      assignment/pairing problem into a nearest-neighbour pass in the C2 manager. Assumes the
-      player owns enough horse-pets (raise the pet cap, C4).
+- [x] **Horse↔follower matching (C3) — DONE & LIVE-VERIFIED 2026-06-05.** Simplified per user:
+      not nearest-neighbour, just **distinct horse per follower** (no two share a mount). Pass A
+      builds `SpareHorses[]` (every unridden mountable follower); Pass B keeps a `HumanoidCounter`,
+      humanoid #i claims `SpareHorses[i]` (`GetArrayItem`) **guarded by `i < Array_Length`** and
+      attaches if in range; surplus followers stay on foot. Index-alignment = distinct mounts.
+      Verified: 2 entertainers → 2 separate horses. KEY paste gotcha: `IsValid` on a
+      `GetArrayItem.Output` pin won't merge (bare Object pin doesn't take the special node's output
+      type — `comp_of` only works because it PRE-TYPES its self pin); use an int-range guard instead.
+      Also: also bumped the **"Warrior"** group cap (humanoid thralls live there), not just "Mount".
+- [ ] **Follower spacing (C5 polish).** Mounted (and on-foot) followers cluster/bump — they home on
+      one follow point. Conan HAS a formation system (`join_formation`/`set_formation_criteria_row`/
+      `is_in_formation`) + a simple knob `set_additional_follow_distance(N)`. Easy fix: stagger each
+      spare horse's additional follow distance by its index so they trail in a line. NB calling a
+      setter on the GetArrayItem horse hits the same self-pin-merge issue — pre-type the self pin or
+      set it on the stored array element. Also: strip the vN debug PrintStrings in final polish.
 - [ ] **Per-mount socket/pose tuning.** camel/rhino variants exist; pick the matching
       `A_human_mounted_idle_<MOUNT>` and verify each species' `attachrider` socket.
 - [ ] **Combat behavior.** On ATTACK/aggro: auto-dismount the follower to fight on foot
