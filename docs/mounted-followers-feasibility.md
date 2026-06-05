@@ -320,32 +320,29 @@ compiled Blueprint and live-verified (§10 / C1 done).** Remaining to make it a 
       creature-type, true=horse) NOT IsMount (mount-STATE; flips, true-for-all at mount time). NB UE
       `LogBlueprintUserMessages` dedups identical strings -> make per-run debug strings unique (embed a
       counter/version) for full visibility. Remaining: replace the STOW *print* with the real action.
-- [~] **C2 — Polling manager** (`BP_MountedFollowerManager : DreamworldMods.ModController`,
-      authored by `dev/c2_build.py`). **State as of 2026-06-05 (resume here):**
-      - Auto-spawns (framework picks up any ModController subclass) + auto-raises Mount cap on
+- [x] **C2 — Polling manager DONE & LIVE-VERIFIED 2026-06-05** (`BP_MountedFollowerManager :
+      DreamworldMods.ModController`, authored by `dev/c2_build.py`). The follower visibly mounts a
+      spare horse when the player mounts, and dismounts when the player does. Full behaviour:
+      - Auto-spawns (framework picks up any ModController subclass) + auto-raises Mount cap once on
         tick, guarded by `Initialized` bool (auto-spawn precedes player spawn, so BeginPlay too early).
-      - Detects mount/dismount via `IsValid(GetMountInput(player))` vs a `WasMounted` bool. NB:
-        `player.GetMount()` is BROKEN (always None while riding) — use `GetMountInput`. (mem
-        `player-getmount-broken`.) Dismount transition fires reliably; caveat: GetMountInput can be
-        pending-kill at the exact transition tick.
-      - On MOUNT: `ForEach` (bp_ir.foreach) over `GetFollowingThrallCharacters`, branch on `IsMount`,
-        currently just **PrintString "STOW A FOLLOWER"** per non-mount follower (placeholder).
-      - **TWO bugs found+fixed+unit-tested (`tests/test_bp_authoring.py`, 7/7):** (1) GetMount→GetMountInput;
-        (2) `bp_ir.foreach` produced an INERT loop (compiled clean, never ran) — needed a
-        `ResolvedWildcardType` header + the array source exec-wired if impure. Now the loop genuinely
-        iterates (LoopBody fires per element, proven). (mem `bp-loop-authoring`.)
-      - **BLOCKER:** the framework caches the ModController class for the editor SESSION, so PIE keeps
-        spawning the PRE-FIX cached class; the summon-trick (`dev/c2_refresh_mgr.py`) appears to grab
-        the cached copy too. So the integrated manager has NOT yet been seen to STOW in PIE. **An
-        editor restart is the reliable way to load the rebuilt manager.** `MgrVersion` CDO tag (==2)
-        added to `dev/c2_build.py` to detect which class actually spawns (read `instance.MgrVersion`).
-      - **NEXT STEPS:** (a) confirm whether summon gives the fixed class via MgrVersion (decides
-        iterate-via-summon vs must-restart); (b) replace the STOW placeholder with the real
-        spawn-`BP_MF_Recipe`+set Rider/Mount/MountIdleAnim+`Stow`, tracked in an array for `Restore`
-        on dismount; (c) nearest-match spare "Mount"-group horses (minus ridden, via `get_rider()`);
-        (d) verify in PIE after a restart. Diagnostics: `dev/c2_debug_state.py`,
-        `c2_debug_mounted.py`, `read_log.py`. Mid-mount log spam = Conan-side (BasePlayerChar
-        CheckRiding/camera SM + TryPerformFatality), not ours.
+      - Detects mount/dismount via `IsValid(GetMountInput(player))` vs a `WasMounted` bool
+        (`player.GetMount()` is BROKEN — mem `player-getmount-broken`).
+      - On MOUNT (2-pass over `GetFollowingThrallCharacters`): **Pass A** picks a `SpareHorse` =
+        a follower that `IsMountable` AND has no rider (`IsValid(GetRider)`==false → excludes the
+        horse the player is on); **Pass B** for each non-mountable (humanoid) follower runs C1's
+        attach chain inline (save mesh xform → attach to `attachrider` socket → freeze movement +
+        collision → seated idle pose `A_human_mounted_idle_HORSE`).
+      - On DISMOUNT: **Pass D** reverses it per humanoid (anim mode→AnimBlueprint, MOVE_Walking,
+        collision on, re-attach mesh to capsule, restore saved xform so it doesn't float).
+      - Bugs fought & killed (all live-verified): GetMount→GetMountInput; inert ForEach (needed
+        `ResolvedWildcardType` + exec-wired source); `IsMount`→`IsMountable` (IsMount is mount-STATE,
+        true-for-all at mount tick); wildcard `Array_Length` compile fail; SpareHorse grabbing the
+        player's own mount. **Framework cache was a red herring** — rebuilds take effect with NO
+        editor restart (proven via the `MgrVersion` CDO tag, now ==6).
+      - **Limitations (→ C3/C5):** one `SavedMeshXform` var + one `SpareHorse` = correct for ONE
+        humanoid; multiple followers need per-rider state and proper 1:1 nearest matching (C3).
+        Debug `PrintString`s (MGR VERSION / MOUNT DETECTED / STOWING / DISMOUNT) still in — strip in
+        C5 polish. Diagnostics: `dev/c2_live.py`, `probe_follower_kind.py`, `read_log.py`.
 - [ ] **Auto-on-dismount reversal.** Covered by C2's dismount-transition branch; polish the
       restore (teleport beside player, re-possess) is C5.
 - [x] **Multiple horses (C4 mechanism, live-proven 2026-06-05).** Follower caps are PER GROUP
