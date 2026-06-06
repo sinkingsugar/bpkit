@@ -98,6 +98,7 @@ ENUM = {
     "EAttachmentRule": "/Script/CoreUObject.Enum'/Script/Engine.EAttachmentRule'",
     "EAnimationMode":  "/Script/CoreUObject.Enum'/Script/Engine.EAnimationMode'",
     "EMovementMode":   "/Script/CoreUObject.Enum'/Script/Engine.EMovementMode'",
+    "EDetachmentRule": "/Script/CoreUObject.Enum'/Script/Engine.EDetachmentRule'",
 }
 def type_obj(pin, cls_path):
     pin.set("PinType.PinCategory", '"object"')
@@ -136,6 +137,21 @@ def attach_node(pos, socket, rules="SnapToTarget"):
     for r in ("LocationRule", "RotationRule", "ScaleRule"):
         set_default(n, r, rules, "byte", enum="EAttachmentRule")
     set_default(n, "bWeldSimulatedBodies", "false", "bool")
+    return n
+def actor_attach(pos, socket, rules="SnapToTarget"):
+    """AActor::K2_AttachToComponent -- attaches the ACTOR (its root) to a parent component.
+    Actor attachment REPLICATES (unlike component/mesh attachment), so clients see the rider."""
+    n = bare_call("K2_AttachToComponent", ACTOR, pos)
+    set_default(n, "SocketName", socket, "name")
+    for r in ("LocationRule", "RotationRule", "ScaleRule"):
+        set_default(n, r, rules, "byte", enum="EAttachmentRule")
+    set_default(n, "bWeldSimulatedBodies", "false", "bool")
+    return n
+def actor_detach(pos, rules="KeepWorld"):
+    """AActor::DetachFromActor -- detach the actor, keeping world transform (drops off the horse)."""
+    n = bare_call("DetachFromActor", ACTOR, pos)
+    for r in ("LocationRule", "RotationRule", "ScaleRule"):
+        set_default(n, r, rules, "byte", enum="EDetachmentRule")
     return n
 class Chain(object):
     def __init__(self, start_node, start_pin):
@@ -176,10 +192,16 @@ def get_item(arr_node, arr_pin, idx_node, idx_pin, elem_sub, pos):
     return n
 
 tick = g.event("ReceiveTick")
+# SERVER-AUTHORITATIVE: gate the whole tick to HasAuthority. On clients this does nothing;
+# the actor-attach + movement/collision freeze done on the server replicate down to them.
+haz = g.call("HasAuthority", ACTOR, pos=(-250, 0))   # self-context (the manager actor)
+bAuth = g.branch(pos=(-50, 0))
+g.wire(tick, "then", bAuth, "execute", exec=True)
+g.wire(haz, "ReturnValue", bAuth, "Condition", exec=False)
 getP = g.call("GetPlayerCharacter", GS, pos=(0, 350))
 g.typed_input(getP, "PlayerIndex", "0", "int")
 cast = cast_node(CONAN, (250, 0))
-g.wire(tick, "then", cast, "execute", exec=True)
+g.wire(bAuth, "then", cast, "execute", exec=True)   # server only
 g.wire(getP, "ReturnValue", cast, "Object", exec=False)
 PLAYER = (cast, "AsConan Character")   # the casted player ConanCharacter output
 
@@ -198,16 +220,19 @@ g.typed_input(addAdj, "Group", "Mount", "name")
 g.typed_input(addAdj, "Amount", "5", "int")
 g.wire(getTSC, "ReturnValue", addAdj, "self", exec=False)
 g.wire(bInit, "else", addAdj, "execute", exec=True)
-# ALSO raise the humanoid-follower group ("Warrior") -- thralls live here (counts showed
-# {"Mount":N,"Warrior":N}); cap was 1 so a 2nd thrall swapped out the 1st. Additive/mod-safe.
-addAdjW = g.call("AddThrallGroupLimitAdjustment", TSC, pos=(1600, 0))
-g.typed_input(addAdjW, "Group", "Warrior", "name")
-g.typed_input(addAdjW, "Amount", "5", "int")
-g.wire(getTSC, "ReturnValue", addAdjW, "self", exec=False)
-g.wire(addAdj, "then", addAdjW, "execute", exec=True)
-setInit = g.var_set("Initialized", "bool", pos=(1850, 0))
+# ALSO raise EVERY humanoid-follower group cap -- thralls live in Warrior/Crafter/Bearer/
+# Performer/Archer by type (MP showed a Crafter capped at 1). Additive/mod-safe; chained.
+prev = addAdj
+for gi, grp in enumerate(("Warrior", "Crafter", "Bearer", "Performer", "Archer")):
+    a = g.call("AddThrallGroupLimitAdjustment", TSC, pos=(1600 + gi * 260, 0))
+    g.typed_input(a, "Group", grp, "name")
+    g.typed_input(a, "Amount", "5", "int")
+    g.wire(getTSC, "ReturnValue", a, "self", exec=False)
+    g.wire(prev, "then", a, "execute", exec=True)
+    prev = a
+setInit = g.var_set("Initialized", "bool", pos=(1600 + 5 * 260, 0))
 setInit.pin("Initialized").literal("true")
-g.wire(addAdjW, "then", setInit, "execute", exec=True)
+g.wire(prev, "then", setInit, "execute", exec=True)
 
 # --- Seq.1: mount-transition detect via GET_RIDER SCAN (reliable across cycles) ---
 # GetMountInput lags/flakes -- its BP_MountInput object is torn down + recreated each mount
@@ -328,35 +353,36 @@ g.wire(bMtblB, "else", bHasHorse, "execute", exec=True)   # NOT mountable -> hum
 g.wire(lessB, "ReturnValue", bHasHorse, "Condition", exec=False)
 # bHasHorse.then -> stow chain (counter in range -> this humanoid gets its OWN spare horse)
 
-rMesh = comp_of(loopB, "Array Element", "Mesh", (3550, 950))
-mMesh = comp_of(horse, "Output", "Mesh", (3550, 1150))   # mount = SpareHorses[counter]
+mMesh = comp_of(horse, "Output", "Mesh", (3550, 1150))   # spare horse mesh = attach parent
+rMesh = comp_of(loopB, "Array Element", "Mesh", (3550, 950))   # rider mesh (for the seated pose)
 rMove = comp_of(loopB, "Array Element", "CharacterMovement", (3550, 1350))
 chain = Chain(bHasHorse, "then")
-# save rider mesh's relative-to-capsule xform BEFORE reparenting (restore uses it)
-getX = bare_call("GetRelativeTransform", SCENE, pos=(3800, 1350))
-gxp = getX.pin("ReturnValue"); gxp.dir = "EGPD_Output"; type_struct(gxp, "/Script/CoreUObject.Transform")
-g.wire(rMesh, "Mesh", getX, "self", exec=False)
-saveX = var_set_m("SavedMeshXform", (3800, 1150))
-g.wire(getX, "ReturnValue", saveX, "SavedMeshXform", exec=False)
-chain.then(saveX)
-attach = attach_node((4050, 750), "attachrider")
-g.wire(rMesh, "Mesh", attach, "self", exec=False)
-g.wire(mMesh, "Mesh", attach, "Parent", exec=False)   # canonical name is 'Parent'
+# ACTOR-attach the follower to the saddle -- actor attachment REPLICATES to clients
+# (mesh/component attachment did not, which is what desynced MP).
+attach = actor_attach((3850, 750), "attachrider")
+g.wire(loopB, "Array Element", attach, "self", exec=False)   # the follower ACTOR
+g.wire(mMesh, "Mesh", attach, "Parent", exec=False)
 chain.then(attach)
-disable = bare_call("DisableMovement", CMC, (4300, 750))
+# raise the body onto the saddle (root capsule snaps ~90 below the mesh)
+setRel = bare_call("K2_SetActorRelativeLocation", ACTOR, (4100, 750))
+relp = setRel.pin("NewRelativeLocation"); relp.dir = "EGPD_Input"
+type_struct(relp, "/Script/CoreUObject.Vector"); relp.set("DefaultValue", '"0.000000,0.000000,90.000000"')
+g.wire(loopB, "Array Element", setRel, "self", exec=False)
+chain.then(setRel)
+disable = bare_call("DisableMovement", CMC, (4350, 750))
 g.wire(rMove, "CharacterMovement", disable, "self", exec=False)
 chain.then(disable)
-nocol = bare_call("SetActorEnableCollision", ACTOR, (4550, 750))
+nocol = bare_call("SetActorEnableCollision", ACTOR, (4600, 750))
 set_default(nocol, "bNewActorEnableCollision", "false", "bool")
 g.wire(loopB, "Array Element", nocol, "self", exec=False)
 chain.then(nocol)
-amode = bare_call("SetAnimationMode", SMC, (4800, 750))
+amode = bare_call("SetAnimationMode", SMC, (4850, 750))
 set_default(amode, "InAnimationMode", "AnimationSingleNode", "byte", enum="EAnimationMode")
 g.wire(rMesh, "Mesh", amode, "self", exec=False)
 chain.then(amode)
-play = bare_call("PlayAnimation", SMC, (5050, 750))
+play = bare_call("PlayAnimation", SMC, (5100, 750))
 set_default(play, "bLooping", "true", "bool")
-animGet = var_self("MountIdleAnim", (4800, 1000))
+animGet = var_self("MountIdleAnim", (4850, 1000))
 g.wire(animGet, "MountIdleAnim", play, "NewAnimToPlay", exec=False)
 g.wire(rMesh, "Mesh", play, "self", exec=False)
 chain.then(play)
@@ -378,29 +404,22 @@ g.wire(loopD, "LoopBody", bMtblD, "execute", exec=True)
 g.wire(mtblD, "ReturnValue", bMtblD, "Condition", exec=False)
 rMeshD = comp_of(loopD, "Array Element", "Mesh", (2650, 1900))
 rMoveD = comp_of(loopD, "Array Element", "CharacterMovement", (2650, 2100))
-rCapD = comp_of(loopD, "Array Element", "CapsuleComponent", (2650, 2300))
 chainD = Chain(bMtblD, "else")   # NOT mountable -> humanoid -> restore
-amodeD = bare_call("SetAnimationMode", SMC, (2900, 1700))
+detachD = actor_detach((2900, 1900))   # ACTOR-detach from the horse (replicates), keep world xform
+g.wire(loopD, "Array Element", detachD, "self", exec=False)
+chainD.then(detachD)
+amodeD = bare_call("SetAnimationMode", SMC, (3150, 1700))
 set_default(amodeD, "InAnimationMode", "AnimationBlueprint", "byte", enum="EAnimationMode")
 g.wire(rMeshD, "Mesh", amodeD, "self", exec=False)
 chainD.then(amodeD)
-walkD = bare_call("SetMovementMode", CMC, (3150, 1700))
+walkD = bare_call("SetMovementMode", CMC, (3400, 1700))
 set_default(walkD, "NewMovementMode", "MOVE_Walking", "byte", enum="EMovementMode")
 g.wire(rMoveD, "CharacterMovement", walkD, "self", exec=False)
 chainD.then(walkD)
-colD = bare_call("SetActorEnableCollision", ACTOR, (3400, 1700))
+colD = bare_call("SetActorEnableCollision", ACTOR, (3650, 1700))
 set_default(colD, "bNewActorEnableCollision", "true", "bool")
 g.wire(loopD, "Array Element", colD, "self", exec=False)
 chainD.then(colD)
-reattachD = attach_node((3650, 1700), "")   # re-parent mesh to own capsule
-g.wire(rMeshD, "Mesh", reattachD, "self", exec=False)
-g.wire(rCapD, "CapsuleComponent", reattachD, "Parent", exec=False)
-chainD.then(reattachD)
-setXD = bare_call("K2_SetRelativeTransform", SCENE, pos=(3900, 1700))
-g.wire(rMeshD, "Mesh", setXD, "self", exec=False)
-savedXD = var_self("SavedMeshXform", (3650, 1950))
-g.wire(savedXD, "SavedMeshXform", setXD, "NewTransform", exec=False)
-chainD.then(setXD)
 
 # Seq2.1: update WasMounted = isMounted (every tick)
 setWas = g.var_set("WasMounted", "bool", pos=(2600, 1150))
@@ -417,13 +436,13 @@ print("inject:", bp.inject(FULL, text, graph_name="EventGraph"))
 gc = unreal.load_object(None, FULL + "_C")
 if gc:
     cdo = unreal.get_default_object(gc)
-    cdo.set_editor_property("MgrVersion", 12)
+    cdo.set_editor_property("MgrVersion", 13)
     anim_obj = unreal.load_object(None, ANIM)
     if anim_obj:
         cdo.set_editor_property("MountIdleAnim", anim_obj)
         print("CDO MountIdleAnim set:", anim_obj.get_name())
     unreal.EditorAssetLibrary.save_asset(PATH)
-    print("CDO MgrVersion=12 stamped")
+    print("CDO MgrVersion=13 stamped")
 txt = bp.export_nodes(bp.graph_nodes(graph_ptr))
 import re
 orphans = re.findall(r'PinName="([^"]+)"[^)]*?bOrphanedPin=True', txt)
