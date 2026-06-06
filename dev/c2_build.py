@@ -211,13 +211,11 @@ def mc_event(name, pos):
     tp = n.pin("then"); tp.dir = "EGPD_Output"; tp.set("PinType.PinCategory", '"exec"')
     return n
 
-# === MCSeat: server-fired MULTICAST -> runs on EVERY instance (server + all clients). Each one
-# applies the seated single-node anim LOCALLY to attached followers. Single-node anim doesn't
-# auto-replicate, so the multicast is how the pose reaches clients (the manager doesn't TICK on
-# clients, but a multicast RPC DOES execute on them). Reuses the proven v14 cosmetic loop. ===
-mcSeat = mc_event("MCSeat", (0, -1300))
+# === COSMETIC SEAT loop -- driven NON-GATED from ReceiveTick below, so it runs on EVERY instance
+# (server + all clients). Now that the manager is Always Relevant it actually exists + ticks on
+# clients, so this applies the seated single-node anim LOCALLY on each client. (v14 logic, which was
+# correct -- it just never ran on clients because the manager wasn't relevant.) ===
 gaC = get_all_actors(CONAN, (300, -1300))
-g.wire(mcSeat, "then", gaC, "execute", exec=True)
 loopMC = g.foreach(ACTOR, pos=(550, -1300))
 g.wire(gaC, "OutActors", loopMC, "Array", exec=False)
 g.wire(gaC, "then", loopMC, "Exec", exec=True)
@@ -244,12 +242,21 @@ g.wire(meshMC, "Mesh", plMC, "self", exec=False)
 g.wire(amMC, "then", plMC, "execute", exec=True)
 
 tick = g.event("ReceiveTick")
-# SERVER-AUTHORITATIVE: gate the whole tick to HasAuthority. The actor-attach + freeze replicate
-# to clients. (A non-gated cosmetic pass was tried for the seated pose but the ModController does
-# NOT tick on clients -> pose must come from a replicating montage instead. See docs.)
+# Manager EXISTS on clients (RemoteRole=SimulatedProxy, live-confirmed). DEBUG v17: print
+# HasAuthority every tick so the PIE log shows whether the BP ReceiveTick actually FIRES on client
+# instances ("auth=false" lines) -- that's Conan's ModController C++ behavior (no source for it).
 haz = g.call("HasAuthority", ACTOR, pos=(-250, 0))
+authS = g.call("Conv_BoolToString", KSTR, pos=(-520, -250))
+g.wire(haz, "ReturnValue", authS, "InBool", exec=False)
+catA = g.call("Concat_StrStr", KSTR, pos=(-330, -250))
+g.typed_input(catA, "A", "MGRTICK17 auth=", "string")
+g.wire(authS, "ReturnValue", catA, "B", exec=False)
+prT = g.call("PrintString", KSL, pos=(-250, -120))
+g.wire(catA, "ReturnValue", prT, "InString", exec=False)
 bAuth = g.branch(pos=(-50, 0))
-g.wire(tick, "then", bAuth, "execute", exec=True)
+g.wire(tick, "then", prT, "execute", exec=True)
+g.wire(prT, "then", gaC, "execute", exec=True)             # NON-GATED cosmetic seat loop (every instance)
+g.wire(loopMC, "Completed", bAuth, "execute", exec=True)   # THEN the server-gated stow/gameplay
 g.wire(haz, "ReturnValue", bAuth, "Condition", exec=False)
 getP = g.call("GetPlayerCharacter", GS, pos=(0, 350))
 g.typed_input(getP, "PlayerIndex", "0", "int")
@@ -489,13 +496,18 @@ print("inject:", bp.inject(FULL, text, graph_name="EventGraph"))
 gc = unreal.load_object(None, FULL + "_C")
 if gc:
     cdo = unreal.get_default_object(gc)
-    cdo.set_editor_property("MgrVersion", 16)
+    cdo.set_editor_property("MgrVersion", 18)
+    # ALWAYS RELEVANT: a logic actor (hidden root, no collision) is otherwise NOT relevant to
+    # clients, so it never replicates there -> no client instance -> its tick/multicast never reach
+    # clients (the root cause of every "host-only" result). Always Relevant = it exists + ticks on
+    # every client. (Conan modding wiki: Replication / Relevancy.)
+    cdo.set_editor_property("always_relevant", True)
     anim_obj = unreal.load_object(None, ANIM)
     if anim_obj:
         cdo.set_editor_property("MountIdleAnim", anim_obj)
         print("CDO MountIdleAnim set:", anim_obj.get_name())
     unreal.EditorAssetLibrary.save_asset(PATH)
-    print("CDO MgrVersion=16 stamped")
+    print("CDO MgrVersion=18 + always_relevant stamped")
 txt = bp.export_nodes(bp.graph_nodes(graph_ptr))
 import re
 orphans = re.findall(r'PinName="([^"]+)"[^)]*?bOrphanedPin=True', txt)
