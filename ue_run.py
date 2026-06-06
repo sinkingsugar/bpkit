@@ -1,18 +1,21 @@
 """Ship a local Python file into the running editor and print its output.
 
 Usage:
-    python ue_run.py <local_script.py>
+    python ue_run.py <local_script.py> [args...]
 
 Runs <local_script.py>'s *source* inside the editor's interpreter via the
 remote_execution channel (MODE_EXEC_FILE), so it shares the editor's address
 space -- `import unreal`, `import ctypes`, and the already-loaded engine DLLs
 are all in scope. stdout/stderr from the editor are echoed back here.
 
-Before the payload runs, this injects the repo root onto the editor's sys.path
-(a separate, idempotent setup command -- the payload itself ships verbatim), so
-payloads can simply `import bpkit` / `import bp_bridge` with NO hardcoded path.
+Before the payload runs, a separate setup command (the payload itself ships
+verbatim) (1) drops any cached `bpkit*` modules so the payload always gets the
+current library, (2) puts the repo root on the editor's sys.path so payloads can
+`import bpkit` with NO hardcoded path, and (3) forwards any args after the script
+name -- the payload reads them via `bpkit.config.argv()`.
 Engine/endpoint paths come from bpkit.config (override via BPKIT_* env vars).
 """
+import json
 import os
 import sys
 import time
@@ -35,7 +38,7 @@ def _find_node(rec, timeout=10.0):
 
 def main():
     if len(sys.argv) < 2:
-        print("usage: python ue_run.py <script.py>")
+        print("usage: python ue_run.py <script.py> [args...]")
         sys.exit(2)
     with open(sys.argv[1], "r", encoding="utf-8") as f:
         src = f.read()
@@ -52,10 +55,15 @@ def main():
         # Make the repo importable inside the editor (persists across calls in the
         # long-lived editor; idempotent). Shipped as its own command so the payload
         # below is still sent verbatim (MODE_EXEC_FILE is picky about a doctored cmd).
-        boot = ("import sys\n"
+        boot = ("import sys, os\n"
+                "for _m in list(sys.modules):\n"
+                "    if _m == 'bpkit' or _m.startswith('bpkit.'):\n"
+                "        sys.modules.pop(_m, None)\n"
                 "_r = r'%s'\n"
                 "if _r not in sys.path:\n"
-                "    sys.path.insert(0, _r)\n" % config.REPO_ROOT)
+                "    sys.path.insert(0, _r)\n"
+                "os.environ['BPKIT_ARGV'] = %s\n"
+                % (config.REPO_ROOT, repr(json.dumps(sys.argv[2:]))))
         rec.run_command(boot, exec_mode=remote.MODE_EXEC_FILE, raise_on_failure=False)
 
         res = rec.run_command(src, exec_mode=remote.MODE_EXEC_FILE, raise_on_failure=False)

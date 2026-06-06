@@ -43,3 +43,10 @@ PLUGIN_PY = _env(
 MULTICAST_GROUP = _env("BPKIT_MCAST_GROUP", "239.0.0.1")
 MULTICAST_PORT = int(_env("BPKIT_MCAST_PORT", "6766"))
 COMMAND_PORT = int(_env("BPKIT_CMD_PORT", "6776"))
+
+
+def argv():
+    """In-editor: the extra args `ue_run.py <script> [args...]` forwarded for this run
+    (via the BPKIT_ARGV env var it sets in the editor process). Returns [] if none."""
+    import json
+    return json.loads(os.environ.get("BPKIT_ARGV", "[]"))

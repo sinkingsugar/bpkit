@@ -9,7 +9,8 @@ import os
 from bpkit import bridge as bp
 from bpkit import config
 
-ASSET = "/Game/Sorcery/Glider/BP_BatDemonGlider"     # <-- your blueprint
+# asset path from `/bp-read <asset>` (ue_run forwards it), else this default:
+ASSET = (config.argv() or ["/Game/Sorcery/Glider/BP_BatDemonGlider"])[0]
 FULL = ASSET + "." + ASSET.rsplit("/", 1)[1]
 OUT = os.path.join(config.REPO_ROOT, "dump_%s.txt" % ASSET.rsplit("/", 1)[1])
 
