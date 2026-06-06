@@ -203,6 +203,45 @@ def get_all_actors(cls_path, pos):
     op = n.pin("OutActors"); op.dir = "EGPD_Output"
     _stype(op, "object", "/Script/CoreUObject.Class'/Script/Engine.Actor'", "Array")
     return n
+def mc_event(name, pos):
+    """A NetMulticast (reliable) custom event. FunctionFlags 201474240 = the exact value a real
+    Multicast event uses (from BP_BatDemonGlider's MulticastFlapUpwards in the dumps)."""
+    n = g.node("K2Node_CustomEvent",
+               ['CustomFunctionName="%s"' % name, "FunctionFlags=201474240"], base="CustomEvent", pos=pos)
+    tp = n.pin("then"); tp.dir = "EGPD_Output"; tp.set("PinType.PinCategory", '"exec"')
+    return n
+
+# === MCSeat: server-fired MULTICAST -> runs on EVERY instance (server + all clients). Each one
+# applies the seated single-node anim LOCALLY to attached followers. Single-node anim doesn't
+# auto-replicate, so the multicast is how the pose reaches clients (the manager doesn't TICK on
+# clients, but a multicast RPC DOES execute on them). Reuses the proven v14 cosmetic loop. ===
+mcSeat = mc_event("MCSeat", (0, -1300))
+gaC = get_all_actors(CONAN, (300, -1300))
+g.wire(mcSeat, "then", gaC, "execute", exec=True)
+loopMC = g.foreach(ACTOR, pos=(550, -1300))
+g.wire(gaC, "OutActors", loopMC, "Array", exec=False)
+g.wire(gaC, "then", loopMC, "Exec", exec=True)
+castMC = cast_node(CONAN, (800, -1300))
+g.wire(loopMC, "Array Element", castMC, "Object", exec=False)
+g.wire(loopMC, "LoopBody", castMC, "execute", exec=True)
+getParMC = g.call("GetAttachParentActor", ACTOR, pos=(1050, -1150))
+g.wire(loopMC, "Array Element", getParMC, "self", exec=False)
+parVMC = g.call("IsValid", KSL, pos=(1250, -1150))
+g.wire(getParMC, "ReturnValue", parVMC, "Object", exec=False)
+bAttMC = g.branch(pos=(1050, -1300))
+g.wire(castMC, "then", bAttMC, "execute", exec=True)
+g.wire(parVMC, "ReturnValue", bAttMC, "Condition", exec=False)
+meshMC = comp_of(castMC, "AsConan Character", "Mesh", (1300, -1450))
+amMC = bare_call("SetAnimationMode", SMC, (1300, -1300))
+set_default(amMC, "InAnimationMode", "AnimationSingleNode", "byte", enum="EAnimationMode")
+g.wire(meshMC, "Mesh", amMC, "self", exec=False)
+g.wire(bAttMC, "then", amMC, "execute", exec=True)
+plMC = bare_call("PlayAnimation", SMC, (1550, -1300))
+set_default(plMC, "bLooping", "true", "bool")
+animMC = var_self("MountIdleAnim", (1300, -1600))
+g.wire(animMC, "MountIdleAnim", plMC, "NewAnimToPlay", exec=False)
+g.wire(meshMC, "Mesh", plMC, "self", exec=False)
+g.wire(amMC, "then", plMC, "execute", exec=True)
 
 tick = g.event("ReceiveTick")
 # SERVER-AUTHORITATIVE: gate the whole tick to HasAuthority. The actor-attach + freeze replicate
@@ -450,13 +489,13 @@ print("inject:", bp.inject(FULL, text, graph_name="EventGraph"))
 gc = unreal.load_object(None, FULL + "_C")
 if gc:
     cdo = unreal.get_default_object(gc)
-    cdo.set_editor_property("MgrVersion", 15)
+    cdo.set_editor_property("MgrVersion", 16)
     anim_obj = unreal.load_object(None, ANIM)
     if anim_obj:
         cdo.set_editor_property("MountIdleAnim", anim_obj)
         print("CDO MountIdleAnim set:", anim_obj.get_name())
     unreal.EditorAssetLibrary.save_asset(PATH)
-    print("CDO MgrVersion=15 stamped")
+    print("CDO MgrVersion=16 stamped")
 txt = bp.export_nodes(bp.graph_nodes(graph_ptr))
 import re
 orphans = re.findall(r'PinName="([^"]+)"[^)]*?bOrphanedPin=True', txt)
