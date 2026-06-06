@@ -1,171 +1,60 @@
-# Conan Exiles Enhanced — AI-assisted Blueprint tooling
+# Conan Exiles Enhanced — bpkit Blueprint tooling
 
 Working dir for Giovanni's experiments driving the **Conan Exiles Enhanced Dev Kit** (UE 5.6.1)
-from outside the editor, to assist with Blueprint/mod work. Engine install is *not* here; this dir
-holds only our tooling/scripts/notes (keep it git-able, never put source in the Program Files kit).
-
----
+from outside the editor. The engine install is *not* here; this repo holds only tooling/scripts/notes
+(git-able; never put kit source here). The framework is **bpkit** (engine-agnostic) — see `README.md`
+and `docs/` for depth; this file is the operational quick-reference.
 
 ## Who / environment
-
 - **User:** Giovanni Petrantoni — GitHub `sinkingsugar` (id 7008900), email `g@hasten.gg`.
-  - git identity on this box: `user.name=Giovanni Petrantoni`,
-    `user.email=7008900+sinkingsugar@users.noreply.github.com` (gh token lacks `user` scope).
-- **Machine:** Windows 11 IoT Enterprise **LTSC 2024**. Keep the **Microsoft Store OFF**
-  (no `Microsoft.WindowsStore`); prefer Win32 `.exe`/`.msi`. Sideloading MSIX from official
-  GitHub releases via `Add-AppxPackage` is fine (local MSIX subsystem, no Store/MS-account).
-- **Tooling paths** (on system PATH, but a shell opened before install needs full paths):
-  - git 2.54.0 — `C:\Program Files\Git\cmd\git.exe`
-  - winget 1.28.240 — `C:\Users\sugar\AppData\Local\Microsoft\WindowsApps\winget.exe` (sideloaded MSIX)
-  - Windows Terminal 1.24.x — sideloaded MSIX, launch via `wt`
-  - gh 2.93.0 — `C:\Program Files\GitHub CLI\gh.exe` (git credential helper for github.com/gist over HTTPS)
-
----
+  git on this box: `user.name=Giovanni Petrantoni`, `user.email=7008900+sinkingsugar@users.noreply.github.com`.
+- **Machine:** Windows 11 IoT Enterprise LTSC 2024. Keep the **Microsoft Store OFF**; prefer Win32 `.exe`/`.msi`
+  (sideloading MSIX from official GitHub releases via `Add-AppxPackage` is fine).
+- **Tooling** (full paths; a shell opened before install needs them): git `C:\Program Files\Git\cmd\git.exe`;
+  winget (sideloaded MSIX); gh `C:\Program Files\GitHub CLI\gh.exe`.
 
 ## The Dev Kit + remote-control channel
+- **Install:** `C:\Program Files\Epic Games\CEUE5Devkit` (177 GB — don't write here). Launch `RunDevKit.bat`.
+  **Project:** `...\UE4\ConanSandbox.uproject`. Engine: `5.6.1-364449+++exiles+release`.
+- Content-only kit: **no C++ compilation, no binary plugins.** That's why graph editing goes through the
+  `bpkit` ctypes bridge (`docs/ARCHITECTURE.md`, `docs/INTERNALS.md`).
+- **Remote execution** is ON (Project Settings → Plugins → Python). bpkit drives the editor directly over it —
+  **MCP is not needed** here.
 
-- **Install:** `C:\Program Files\Epic Games\CEUE5Devkit`  (managed Epic install, 177 GB — don't write here).
-  Launch: `RunDevKit.bat` → `Engine\Binaries\Win64\UnrealEditor.exe UE4\ConanSandbox.uproject -ModDevKit`.
-- **Project:** `C:\Program Files\Epic Games\CEUE5Devkit\UE4\ConanSandbox.uproject` (the `UE4` folder is the project dir).
-- **Engine reports:** `5.6.1-364449+++exiles+release`.
-- Content-only kit: **no C++ compilation, can't add binary plugins.** (Legacy non-Enhanced kit was
-  UE 4.15.3 and predates UE Python entirely — not in use.)
+### Running things (fresh shells bite on this)
+- **WHICH PYTHON:** bare `python` hits the (disabled) Windows Store alias and dies. ALWAYS use the bundled
+  interpreter (`bpkit.config.BUNDLED_PYTHON`):
+  `& 'C:\Program Files\Epic Games\CEUE5Devkit\Engine\Binaries\ThirdParty\Python3\Win64\python.exe' ...`
+- **Two usage patterns — don't cross them:**
+  - `python examples/smoketest.py` — a **standalone client** (opens its own connection).
+  - `python ue_run.py <payload>` — `<payload>` is **editor-side** code (`import unreal; ...`); ue_run ships its
+    source into the editor and runs it there. Running a standalone client *through* ue_run double-wraps and
+    prints a false `NO NODE FOUND`. Liveness check: `python ue_run.py bpkit/ops/ping.py`.
+- **Module cache:** the editor caches imports across `ue_run` calls. After editing a `bpkit` lib, pop
+  `bpkit`/`bpkit.*` from `sys.modules` at the top of the payload before importing (snippet in `docs/INTERNALS.md` §1).
+- ue_run injects the repo root onto the editor's `sys.path`, so payloads just `import bpkit` (no hardcoded path).
 
-### Python Remote Execution — VERIFIED WORKING (2026-06-04)
-`PythonScriptPlugin` ships **compiled** in the kit (`Engine\Plugins\Experimental\PythonScriptPlugin\
-Binaries\Win64\UnrealEditor-PythonScriptPlugin*.dll` + `Content\Python\remote_execution.py`), so live
-external control works with **zero compilation**.
+### Hard rules (each cost real time or trust)
+- **Do NOT start Play (PIE) yourself** — the user controls Play. Only read/experiment in the user's own session.
+- **Never author/compile a Blueprint during PIE** (breaks live instances). Check
+  `LevelEditorSubsystem.is_in_play_in_editor()` first; author with Play stopped.
+- **Never fire a native UFunction with guessed/empty args** to "reveal" its signature — it can crash the editor.
+  Read the reflected `__doc__` or the BP `FunctionEntry` pins instead (`docs/CONAN-NOTES.md`).
+- A Slate modal freezes the channel → rescue from a host process: `& $py bpkit/ops/dismiss_modal.py enter`.
 
-To use:
-1. Editor: "Python Editor Script Plugin" enabled (it is). **Project Settings → Plugins → Python →
-   "Enable Remote Execution"** ON (it is; toggle is *project*-level, not Editor Prefs).
-2. Run a client with the **bundled** interpreter so versions match:
-   `& 'C:\Program Files\Epic Games\CEUE5Devkit\Engine\Binaries\ThirdParty\Python3\Win64\python.exe' <script>`
-   pointing `sys.path` at the plugin's `Content\Python` and importing `remote_execution`.
-   Defaults are same-machine-ready: multicast `239.0.0.1:6766`, command `127.0.0.1:6776`.
-- Smoke test: `examples/smoketest.py` (prints engine ver + logs into the editor).
-- API probe:  `dev/ue_probe_bp.py` (provenance; targets the pre-refactor API).
+## Where things live
+- **Framework:** `bpkit/` (`bridge`/`ir`/`author`/`compact`/`pe`/`config`) + `bpkit/ops/` (ping, pie, modal,
+  cleanup, log tail, compile-errors). Root `bp_*.py` / `pe_exports.py` are backward-compat shims.
+- **Examples:** `examples/`. **Regression suite:** `tests/` (run with Play stopped). **The mod:** `mods/mounted-followers/`.
+- **Knowledge base — read these instead of re-deriving:**
+  - `docs/ARCHITECTURE.md` — design; what the stock API can't do; why ctypes; no MCP/plugin/transpiler.
+  - `docs/INTERNALS.md` — bridge internals: symbol resolution, FString/TArray/TSet, the by-value `~TSet`
+    crash + fix, read/write/edit flows, the typed-pin orphan trap, array/ForEach authoring, compile-flag caveats.
+  - `docs/CONAN-NOTES.md` — live-verified Conan facts: mount seating is player-gated, `get_mount` broken
+    (use `get_rider`), follower group caps, the ModController hook, MP/replication rules.
+  - `docs/JOURNEY.md` — provenance (how the bridge + mod were reverse-engineered).
+  - `mods/mounted-followers/FEASIBILITY.md` — the mounted-followers design audit + roadmap.
 
-> **WHICH PYTHON (fresh shells bite on this).** Bare `python` on this box hits the Windows
-> **Store app-execution alias** and dies with `Python was not found; ... Microsoft Store` — there
-> is NO system Python and the Store is deliberately OFF. ALWAYS invoke the **bundled** interpreter
-> by full path for BOTH `ue_run.py` and standalone clients:
-> `& 'C:\Program Files\Epic Games\CEUE5Devkit\Engine\Binaries\ThirdParty\Python3\Win64\python.exe' ue_run.py <payload>`
-> (`ue_run.py` self-inserts the plugin's `Content\Python` onto `sys.path`, so `remote_execution`
-> imports without extra setup.) In Bash, set `PY="C:/Program Files/.../python.exe"` once and use `"$PY"`.
-
-> **INVOCATION GOTCHA (cost an hour of false "channel down" debugging 2026-06-05).**
-> Two DIFFERENT usage patterns — do not cross them:
-> - `python examples/smoketest.py` — run a **standalone client DIRECTLY**. It opens its
->   own `remote_execution` connection. (Use the bundled python; same machine.)
-> - `python ue_run.py <payload>` — `<payload>` must be **editor-side code** (`import unreal;
->   ...`); ue_run ships its *source* into the editor and runs it there.
-> Running `ue_run.py examples/smoketest.py` DOUBLE-WRAPS: the editor runs the client, which
-> then tries to multicast-discover a node *from inside the editor*, finds none, and prints
-> `NO NODE FOUND` — which looks exactly like a dead channel but isn't. If `ue_run.py` echoes
-> `[Info]` `LogPython` lines back at all, the channel is FINE; read what the payload actually
-> did. Quick liveness check: `python ue_run.py dev/ping.py`.
-
-> **MODULE CACHE:** the editor's Python caches imported modules across `ue_run` calls, so after
-> editing a lib (`bp_ir`/`bp_bridge`/…) a payload that imports it gets the STALE version. Force a
-> reload at the top: `import sys; [sys.modules.pop(m, None) for m in ("bp_ir","bp_bridge","bp_author","bp_compact")]`
-> then import. PIE control: `dev/pie_play.py`/`pie_end.py`/`pie_state.py` (drive Play via
-> LevelEditorSubsystem); `python dev/dismiss_modal.py enter` (host-side) clears a modal that froze
-> the channel. NEVER author/compile a BP while in PIE (breaks live instances). ModController
-> subclasses AUTO-SPAWN on play (DreamworldMods) but BEFORE the player exists — do player-dependent
-> init on tick (guard with a bool), not BeginPlay.
-
-**MCP is NOT needed here.** Claude Code has shell+Python, so it drives the editor directly over
-`remote_execution` — strictly more capable than a fixed MCP tool surface. MCP only earns its place for
-external/sandboxed clients or a guardrailed tool menu.
-
----
-
-## What the stock `unreal` Python API can / can't do (probed live 2026-06-04)
-
-> **FINDING UFUNCTION SIGNATURES — NEVER fire blind (crashes the editor).** Calling a native
-> UFunction with no/guessed args to make the error "reveal" the signature can null-deref and CRASH
-> the whole editor (cost two PIE sessions 2026-06-06; see memory `no-blind-native-ufunction-calls`).
-> Unreal's reflection already has every signature — read it:
-> - **Reflection docstring (preferred):** every reflected function auto-generates a `__doc__` with
->   typed params + return. Native class: `unreal.ConanCharacter.bp_mount_server.__doc__`. BP class:
->   `cls = unreal.load_object(None, "/Game/.../Foo.Foo_C"); t = type(unreal.get_default_object(cls)); print(t.start_emote.__doc__)`.
-> - **Enums:** `dir(unreal.CharacterEmotes)` lists the values; `<Enum>.<VALUE>.get_display_name()`.
-> - **BP graphs:** `bp_bridge.read_blueprint(path)` — the `K2Node_FunctionEntry` node lists typed
->   param pins. PIE-independent, read-only.
-> Only after you know the real param TYPES, make ONE call with correct args. (TODO: a `ue_reflect.py`
-> helper module — dump any UFunction's param chain + any UEnum's values in one call.)
-
-CAN (fully automatable):
-- load / find / **create** assets (`AssetTools` + factories), duplicate into variants
-- add/remove **function graphs**, find event graph (`add_function_graph`, `find_event_graph`)
-- add/edit **variables** + flags (`add_member_variable`, `set_blueprint_variable_*`)
-- edit **properties / CDO defaults / DataTable rows / components** (`get/set_editor_property`,
-  `SubobjectDataSubsystem`)
-- **compile** blueprints (`BlueprintEditorLibrary.compile_blueprint`) → feedback loop closes
-
-CANNOT *via the stock `unreal` Python API* (not reflected; would be C++ unavailable in content-only kit):
-- spawn a K2 node (CallFunction/Branch/etc.), wire/connect pins
-- even *read* a graph's nodes (`function_graphs`/`uber_graph_pages` not exposed)
-- no `KismetEditorUtilities`, no `ImportNodesFromText` → Python can't paste nodes either
-
-> **SUPERSEDED 2026-06-04 — the ctypes bridge defeats the whole list.** The C++ paste/copy
-> entrypoints ARE exported from the loaded editor DLLs, so in-process Python calls them by address
-> via `ctypes` (zero compilation, zero UI/clipboard/focus). Both directions work and are SAFE:
-> **WRITE** = `ImportNodesFromText` + compile + save; **READ** = enumerate (`GetAllGraphs` /
-> `GetObjectsWithOuter`) + `ExportNodesToText` per node. Read the entire `BP_BatDemonGlider` (19
-> graphs, 959 nodes, 2.84 MB) with zero crashes. Key gotcha: `ExportNodesToText` takes the `TSet`
-> BY VALUE and `~TSet`-frees its buffers, so the set's element buffer MUST be `FMemory::Malloc`'d,
-> not ctypes — else heap corruption + delayed crash (cost 2 editor crashes to learn; see memory
-> `ctypes-bp-paste`). Tooling at repo root: `bp_bridge.py` (the library — was `ue_bp_inject.py`
-> before the refactor), `ue_run.py`, `pe_exports.py`.
-
-## Conan multiplayer / replication (learned the hard way — mounted followers, 2026-06-06)
-
-Got mounted-followers fully working in MP (listen-server PIE). The hard-won rules:
-
-- **RELEVANCY is the first thing to check.** A logic-only actor (a `DreamworldMods.ModController`
-  manager: hidden root, no collision, no position) is **never relevant to clients**, so it never
-  replicates there — its `ReceiveTick`, its Multicast RPCs, and its replicated vars are all DEAD on
-  clients even though `RemoteRole==SimulatedProxy`. Fix: **`cdo.set_editor_property("always_relevant", True)`**.
-  This was the root cause of weeks of "host-only" symptoms. (Conan modding wiki: Replication/Relevancy.)
-- **Server-side animation does NOT auto-replicate.** `PlayAnimMontage`, single-node `PlayAnimation`,
-  and even `BPEmoteController.start_emote` called server-side play **locally only** — confirmed even
-  on the host *player*. UE only replicates anim via a replicated property (+OnRep) or an RPC. Our
-  pattern: server owns gameplay (HasAuthority-gated attach/freeze); a **NON-gated loop on the
-  Always-Relevant manager** re-applies the cosmetic (single-node seated anim) on **every** instance,
-  so it "replicates" by being recomputed everywhere. Needs a reset branch (not-attached ->
-  AnimationBlueprint) so clients un-pose on dismount (the server-side reset doesn't replicate).
-- **Actor-attach replicates; component/mesh-attach does NOT.** Attach the follower ACTOR
-  (`K2_AttachToComponent` on the rider, parent = horse mesh) -> clients see it ride. Mesh-attach
-  desynced (host saw it mounted, clients saw it at origin).
-- **BP attach/detach need the `K2_` prefix.** `K2_AttachToComponent` / **`K2_DetachFromActor`** are
-  the BlueprintCallable versions; the plain C++ names (`DetachFromActor`) compile clean but **silently
-  no-op** (cost the whole dismount bug). Python method names drop the prefix (`detach_from_actor`).
-- **`GetAllActorsOfClass`: the `ActorClass` pin `DefaultObject` MUST be quoted** (`="/Script/..."`).
-  Unquoted -> `ActorClass=null` -> 0 results -> silent empty loop.
-- Exclude **mountable creatures** (horses) and **players** (`GetPlayerState` valid = a player on any
-  instance; `IsPlayerControlled` is false for other players' sim-proxies) from any "seat attached
-  characters" loop, or you apply human anims to horse skeletons (breaks the ridden horse -> rider offset).
-- Builder: `dev/c2_build.py` (`BP_MountedFollowerManager`, MgrVersion 25). Stamp a version int on the
-  CDO so you can tell which class actually spawned. See memory `mp-mounted-followers-findings`.
-
-## Architecture decision
-
-Hybrid, intentionally small — **no transpiler, no MCP, no plugin**:
-- **Data/asset/compile 80% → thin Python helper** over `remote_execution` (fully automated).
-- **Node-graph logic 20% → BP node *text*** authored by Claude → pasted (human or UI-automation Ctrl+V),
-  since neither Python nor a C++ helper can build graphs in this kit. Engine compile = the validator.
-- (Shards→BP angle was explored and dropped; not the point. JS/TS→BP also dropped.)
-
-Next:
-1. Nail the hand-built `TSet` layout SAFELY: validate `make_tset()` byte-for-byte against a real
-   UE-built set (from an import out-`TSet`) via `memcmp` BEFORE ever calling `ExportNodesToText` —
-   pure byte compare can't crash. Then arbitrary-graph reading is done. (See memory `ctypes-bp-paste`.)
-2. Discover canonical text for real *logic* nodes (CallFunction/Event/Branch + wired pins) from the
-   exported examples, parameterize, inject, let `compile_blueprint` validate.
-3. **BP-text compaction / navigation tool.** Exported node text is hugely verbose (~20 default flags
-   per pin line; 17 graphs of BP_BatDemonGlider = 1.38 MB). Build a lossless-ish compactor + an index
-   so Claude can navigate a blueprint's logic (nodes, connections, sub-graphs) WITHOUT pulling the
-   full text into context every time — drop redundant pin defaults, summarize per-graph/per-node,
-   allow drill-down by node/graph id. Token efficiency is the goal.
+## Architecture (one line)
+Hybrid, small, no transpiler/MCP/plugin: data/asset/compile via the reflected `unreal` API; node-graph logic
+via authored node-**text** pasted through the ctypes bridge; engine `compile_blueprint` is the validator.

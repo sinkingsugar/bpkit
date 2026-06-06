@@ -11,14 +11,13 @@ Designed to grow into a real regression suite -- add test_* functions; the runne
 the bottom discovers and reports them.
 """
 import sys
-sys.path.insert(0, r"C:\Users\sugar\devel\conan")
-for _m in ("bp_ir", "bp_bridge", "bp_author", "bp_compact"):
-    sys.modules.pop(_m, None)
+for _m in list(sys.modules):
+    if _m == "bpkit" or _m.startswith("bpkit."):
+        sys.modules.pop(_m, None)
 import unreal
 import re
 import time
-import bp_bridge as bp
-import bp_ir as ir
+from bpkit import bridge as bp, ir
 
 BEL = unreal.BlueprintEditorLibrary
 EAS = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)

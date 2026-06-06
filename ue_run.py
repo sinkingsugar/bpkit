@@ -5,18 +5,32 @@ Usage:
 
 Runs <local_script.py>'s *source* inside the editor's interpreter via the
 remote_execution channel (MODE_EXEC_FILE), so it shares the editor's address
-space — `import unreal`, `import ctypes`, and the already-loaded engine DLLs
+space -- `import unreal`, `import ctypes`, and the already-loaded engine DLLs
 are all in scope. stdout/stderr from the editor are echoed back here.
 
-Payloads that need the library do `sys.path.insert(...); import bp_bridge`
-themselves (see examples/) — MODE_EXEC_FILE is picky about a modified command,
-so we ship the file's source verbatim.
+Before the payload runs, this injects the repo root onto the editor's sys.path
+(a separate, idempotent setup command -- the payload itself ships verbatim), so
+payloads can simply `import bpkit` / `import bp_bridge` with NO hardcoded path.
+Engine/endpoint paths come from bpkit.config (override via BPKIT_* env vars).
 """
-import sys, time
+import os
+import sys
+import time
 
-PLUGIN_PY = r"C:\Program Files\Epic Games\CEUE5Devkit\Engine\Plugins\Experimental\PythonScriptPlugin\Content\Python"
-sys.path.insert(0, PLUGIN_PY)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # repo root -> import bpkit
+from bpkit import config
+
+sys.path.insert(0, config.PLUGIN_PY)
 import remote_execution as remote
+
+
+def _find_node(rec, timeout=10.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if rec.remote_nodes:
+            return rec.remote_nodes[0]
+        time.sleep(0.25)
+    return None
 
 
 def main():
@@ -28,27 +42,31 @@ def main():
 
     rec = remote.RemoteExecution()
     rec.start()
-    node = None
-    for _ in range(40):
-        nodes = rec.remote_nodes
-        if nodes:
-            node = nodes[0]
-            break
-        time.sleep(0.25)
-    if not node:
-        print("[!] no editor node found (remote exec off / editor closed)")
-        rec.stop()
-        sys.exit(1)
+    try:
+        node = _find_node(rec)
+        if not node:
+            print("[!] no editor node found (remote exec off / editor closed)")
+            sys.exit(1)
+        rec.open_command_connection(node["node_id"])
 
-    rec.open_command_connection(node["node_id"])
-    res = rec.run_command(src, exec_mode=remote.MODE_EXEC_FILE, raise_on_failure=False)
-    print("[+] success:", res.get("success"))
-    for o in res.get("output") or []:
-        print("    [{}] {}".format(o.get("type"), o.get("output", "").rstrip()))
-    if res.get("result"):
-        print("    result:", res.get("result"))
-    rec.close_command_connection()
-    rec.stop()
+        # Make the repo importable inside the editor (persists across calls in the
+        # long-lived editor; idempotent). Shipped as its own command so the payload
+        # below is still sent verbatim (MODE_EXEC_FILE is picky about a doctored cmd).
+        boot = ("import sys\n"
+                "_r = r'%s'\n"
+                "if _r not in sys.path:\n"
+                "    sys.path.insert(0, _r)\n" % config.REPO_ROOT)
+        rec.run_command(boot, exec_mode=remote.MODE_EXEC_FILE, raise_on_failure=False)
+
+        res = rec.run_command(src, exec_mode=remote.MODE_EXEC_FILE, raise_on_failure=False)
+        print("[+] success:", res.get("success"))
+        for o in res.get("output") or []:
+            print("    [{}] {}".format(o.get("type"), o.get("output", "").rstrip()))
+        if res.get("result"):
+            print("    result:", res.get("result"))
+        rec.close_command_connection()
+    finally:
+        rec.stop()
 
 
 if __name__ == "__main__":
