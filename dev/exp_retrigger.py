@@ -13,11 +13,8 @@ if hum and horse:
     call(ai, "stop_emote")
     brain = ai.get_editor_property("brain_component") if ai and "ERR" not in str(ai) else None
     if brain: call(brain, "stop_logic", "stowed")
-    # CORRECT accessor for CharacterMovement
     cm = hum.get_component_by_class(unreal.CharacterMovementComponent)
-    print("cm:", cm.get_class().get_name() if cm else None)
-    if cm:
-        print("  disable_movement:", call(cm, "disable_movement"))   # runtime setter only (no set_editor_property on live comps!)
+    if cm: call(cm, "disable_movement")
     hum.set_actor_enable_collision(False)
     R = unreal.AttachmentRule.SNAP_TO_TARGET
     call(hum, "attach_to_component", horse.get_editor_property("Mesh"), "attachrider", R, R, R, False)
@@ -25,6 +22,7 @@ if hum and horse:
     mesh = hum.get_editor_property("Mesh")
     mesh.set_animation_mode(unreal.AnimationMode.ANIMATION_BLUEPRINT)
     mtg = unreal.load_object(None, "/Game/_Scratch/AM_MF_idle_HORSE.AM_MF_idle_HORSE")
-    call(hum, "play_anim_montage", mtg, 1.0, "")
-    print("loc:", hum.get_actor_location())
-    print(">> watch several seconds: stable on horse + seated now?")
+    # SLOW play rate so the seated pose holds ~80s for observation
+    call(hum, "play_anim_montage", mtg, 0.05, "")
+    print("playing %s on %s at 0.05x (~80s)" % (hum.get_class().get_name(), horse.get_class().get_name()))
+    print(">> you have ~80s -- is it SEATED full-body on BOTH screens, or upper-body-only/standing legs?")

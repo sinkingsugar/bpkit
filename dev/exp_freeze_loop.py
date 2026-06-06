@@ -13,11 +13,8 @@ if hum and horse:
     call(ai, "stop_emote")
     brain = ai.get_editor_property("brain_component") if ai and "ERR" not in str(ai) else None
     if brain: call(brain, "stop_logic", "stowed")
-    # CORRECT accessor for CharacterMovement
     cm = hum.get_component_by_class(unreal.CharacterMovementComponent)
-    print("cm:", cm.get_class().get_name() if cm else None)
-    if cm:
-        print("  disable_movement:", call(cm, "disable_movement"))   # runtime setter only (no set_editor_property on live comps!)
+    if cm: call(cm, "disable_movement")
     hum.set_actor_enable_collision(False)
     R = unreal.AttachmentRule.SNAP_TO_TARGET
     call(hum, "attach_to_component", horse.get_editor_property("Mesh"), "attachrider", R, R, R, False)
@@ -26,5 +23,11 @@ if hum and horse:
     mesh.set_animation_mode(unreal.AnimationMode.ANIMATION_BLUEPRINT)
     mtg = unreal.load_object(None, "/Game/_Scratch/AM_MF_idle_HORSE.AM_MF_idle_HORSE")
     call(hum, "play_anim_montage", mtg, 1.0, "")
-    print("loc:", hum.get_actor_location())
-    print(">> watch several seconds: stable on horse + seated now?")
+    ai2 = mesh.get_anim_instance()
+    # find the current section name and loop it back to itself
+    sect = call(ai2, "montage_get_current_section", mtg)
+    print("current section:", sect)
+    for s in (sect, "Default", "None"):
+        r = call(ai2, "montage_set_next_section", s, s, mtg)
+        print("  set_next_section(%s):" % s, r)
+    print(">> watch 10s: stable + SEATED full-body on BOTH screens (looping, no revert to standing)?")
