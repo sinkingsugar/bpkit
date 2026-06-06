@@ -44,6 +44,9 @@ for vn in ("MgrVersion", "DbgCount"):
 # for one humanoid follower; per-rider state is a C3/multi-follower polish item.
 conan_ref = unreal.BlueprintEditorLibrary.get_object_reference_type(unreal.ConanCharacter.static_class())
 unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, "SpareHorse", conan_ref)
+# PlayerMount: the horse the player is riding (found by get_rider scan; null when on foot).
+# Reliable mount detector -- GetMountInput lags/flakes across mount cycles.
+unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, "PlayerMount", conan_ref)
 # C3: distinct horse per follower -> a list of unridden spare horses, indexed by a humanoid
 # counter (humanoid #i -> SpareHorses[i]); index-alignment guarantees no two share a horse.
 unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, "SpareHorses",
@@ -89,7 +92,7 @@ CMC = "/Script/Engine.CharacterMovementComponent"
 ACTOR = "/Script/Engine.Actor"
 CLS = {"Mesh": SMC, "CharacterMovement": CMC,
        "CapsuleComponent": "/Script/Engine.CapsuleComponent", "SpareHorse": CONAN,
-       "MountIdleAnim": "/Script/Engine.AnimSequence"}
+       "PlayerMount": CONAN, "MountIdleAnim": "/Script/Engine.AnimSequence"}
 STRUCTS = {"SavedMeshXform": "/Script/CoreUObject.Transform"}
 ENUM = {
     "EAttachmentRule": "/Script/CoreUObject.Enum'/Script/Engine.EAttachmentRule'",
@@ -206,26 +209,49 @@ setInit = g.var_set("Initialized", "bool", pos=(1850, 0))
 setInit.pin("Initialized").literal("true")
 g.wire(addAdjW, "then", setInit, "execute", exec=True)
 
-# --- Seq.1: mount-transition detect ---
-# NB: player.GetMount() is broken (returns None while riding); GetMountInput is the
-# reliable signal (valid when mounted, None when off). See mem player-getmount-broken.
-getMount = g.call("GetMountInput", CONAN, pos=(750, 600))
-g.wire(PLAYER[0], PLAYER[1], getMount, "self", exec=False)
-isValid = g.call("IsValid", KSL, pos=(950, 600))
-g.wire(getMount, "ReturnValue", isValid, "Object", exec=False)
-getWas = g.var_get("WasMounted", "bool", pos=(950, 800))
-neq = g.call("NotEqual_BoolBool", KML, pos=(1150, 700))
-g.wire(isValid, "ReturnValue", neq, "A", exec=False)
-g.wire(getWas, "WasMounted", neq, "B", exec=False)
-
-seq2 = seq_node((1100, 500))
+# --- Seq.1: mount-transition detect via GET_RIDER SCAN (reliable across cycles) ---
+# GetMountInput lags/flakes -- its BP_MountInput object is torn down + recreated each mount
+# cycle, so IsValid reads false for a long window on remount (stow fired "after a lot of
+# time"). get_rider on the mount is the stable ground truth. Each tick: scan the following
+# horses; if one has the player as rider -> that's PlayerMount and we're mounted.
+seq2 = seq_node((900, 500))
 g.wire(seq, "then_1", seq2, "execute", exec=True)
-bChanged = g.branch(pos=(1350, 500))
-g.wire(seq2, "then_0", bChanged, "execute", exec=True)
+
+getTSCd = g.call("GetThrallSystemComponent", CONAN, pos=(700, 700))
+g.wire(PLAYER[0], PLAYER[1], getTSCd, "self", exec=False)
+getFolD = g.call("GetFollowingThrallCharacters", TSC, pos=(900, 700))
+g.wire(getTSCd, "ReturnValue", getFolD, "self", exec=False)
+clrPM = var_set_m("PlayerMount", (1100, 500))   # null (value pin left unconnected)
+g.wire(seq2, "then_0", clrPM, "execute", exec=True)
+loopDet = g.foreach(CONAN, pos=(1300, 650))
+g.wire(getFolD, "ReturnValue", loopDet, "Array", exec=False)
+g.wire(clrPM, "then", loopDet, "Exec", exec=True)
+getRiderDet = g.call("GetRider", CONAN, pos=(1550, 900))
+g.wire(loopDet, "Array Element", getRiderDet, "self", exec=False)
+eqDet = g.call("EqualEqual_ObjectObject", KML, pos=(1750, 900))
+g.wire(getRiderDet, "ReturnValue", eqDet, "A", exec=False)
+g.wire(PLAYER[0], PLAYER[1], eqDet, "B", exec=False)
+bRiderDet = g.branch(pos=(1550, 650))
+g.wire(loopDet, "LoopBody", bRiderDet, "execute", exec=True)
+g.wire(eqDet, "ReturnValue", bRiderDet, "Condition", exec=False)
+setPM = var_set_m("PlayerMount", (1800, 650))
+g.wire(loopDet, "Array Element", setPM, "PlayerMount", exec=False)
+g.wire(bRiderDet, "then", setPM, "execute", exec=True)   # this horse's rider == player -> our mount
+
+# isMounted = IsValid(PlayerMount); transition fires after the scan completes
+getPM = var_self("PlayerMount", (1300, 1000))
+isMounted = g.call("IsValid", KSL, pos=(1550, 1100))
+g.wire(getPM, "PlayerMount", isMounted, "Object", exec=False)
+getWas = g.var_get("WasMounted", "bool", pos=(1550, 1250))
+neq = g.call("NotEqual_BoolBool", KML, pos=(1800, 1150))
+g.wire(isMounted, "ReturnValue", neq, "A", exec=False)
+g.wire(getWas, "WasMounted", neq, "B", exec=False)
+bChanged = g.branch(pos=(2050, 650))
+g.wire(loopDet, "Completed", bChanged, "execute", exec=True)
 g.wire(neq, "ReturnValue", bChanged, "Condition", exec=False)
-bMounted = g.branch(pos=(1600, 500))
+bMounted = g.branch(pos=(2300, 650))
 g.wire(bChanged, "then", bMounted, "execute", exec=True)
-g.wire(isValid, "ReturnValue", bMounted, "Condition", exec=False)
+g.wire(isMounted, "ReturnValue", bMounted, "Condition", exec=False)
 # MOUNT branch -- the real action (2-pass over followers):
 #   Pass A: collect unridden spare horses -> SpareHorses[] (stagger each one's follow distance)
 #   Pass B: stow each humanoid onto SpareHorses[counter] (C1 attach chain)
@@ -377,8 +403,8 @@ g.wire(savedXD, "SavedMeshXform", setXD, "NewTransform", exec=False)
 chainD.then(setXD)
 
 # Seq2.1: update WasMounted = isMounted (every tick)
-setWas = g.var_set("WasMounted", "bool", pos=(1350, 850))
-g.wire(isValid, "ReturnValue", setWas, "WasMounted", exec=False)
+setWas = g.var_set("WasMounted", "bool", pos=(2600, 1150))
+g.wire(isMounted, "ReturnValue", setWas, "WasMounted", exec=False)
 g.wire(seq2, "then_1", setWas, "execute", exec=True)
 
 text = g.render()
@@ -391,13 +417,13 @@ print("inject:", bp.inject(FULL, text, graph_name="EventGraph"))
 gc = unreal.load_object(None, FULL + "_C")
 if gc:
     cdo = unreal.get_default_object(gc)
-    cdo.set_editor_property("MgrVersion", 11)
+    cdo.set_editor_property("MgrVersion", 12)
     anim_obj = unreal.load_object(None, ANIM)
     if anim_obj:
         cdo.set_editor_property("MountIdleAnim", anim_obj)
         print("CDO MountIdleAnim set:", anim_obj.get_name())
     unreal.EditorAssetLibrary.save_asset(PATH)
-    print("CDO MgrVersion=11 stamped")
+    print("CDO MgrVersion=12 stamped")
 txt = bp.export_nodes(bp.graph_nodes(graph_ptr))
 import re
 orphans = re.findall(r'PinName="([^"]+)"[^)]*?bOrphanedPin=True', txt)
