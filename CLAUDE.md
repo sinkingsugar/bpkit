@@ -120,6 +120,36 @@ CANNOT *via the stock `unreal` Python API* (not reflected; would be C++ unavaila
 > `ctypes-bp-paste`). Tooling at repo root: `bp_bridge.py` (the library — was `ue_bp_inject.py`
 > before the refactor), `ue_run.py`, `pe_exports.py`.
 
+## Conan multiplayer / replication (learned the hard way — mounted followers, 2026-06-06)
+
+Got mounted-followers fully working in MP (listen-server PIE). The hard-won rules:
+
+- **RELEVANCY is the first thing to check.** A logic-only actor (a `DreamworldMods.ModController`
+  manager: hidden root, no collision, no position) is **never relevant to clients**, so it never
+  replicates there — its `ReceiveTick`, its Multicast RPCs, and its replicated vars are all DEAD on
+  clients even though `RemoteRole==SimulatedProxy`. Fix: **`cdo.set_editor_property("always_relevant", True)`**.
+  This was the root cause of weeks of "host-only" symptoms. (Conan modding wiki: Replication/Relevancy.)
+- **Server-side animation does NOT auto-replicate.** `PlayAnimMontage`, single-node `PlayAnimation`,
+  and even `BPEmoteController.start_emote` called server-side play **locally only** — confirmed even
+  on the host *player*. UE only replicates anim via a replicated property (+OnRep) or an RPC. Our
+  pattern: server owns gameplay (HasAuthority-gated attach/freeze); a **NON-gated loop on the
+  Always-Relevant manager** re-applies the cosmetic (single-node seated anim) on **every** instance,
+  so it "replicates" by being recomputed everywhere. Needs a reset branch (not-attached ->
+  AnimationBlueprint) so clients un-pose on dismount (the server-side reset doesn't replicate).
+- **Actor-attach replicates; component/mesh-attach does NOT.** Attach the follower ACTOR
+  (`K2_AttachToComponent` on the rider, parent = horse mesh) -> clients see it ride. Mesh-attach
+  desynced (host saw it mounted, clients saw it at origin).
+- **BP attach/detach need the `K2_` prefix.** `K2_AttachToComponent` / **`K2_DetachFromActor`** are
+  the BlueprintCallable versions; the plain C++ names (`DetachFromActor`) compile clean but **silently
+  no-op** (cost the whole dismount bug). Python method names drop the prefix (`detach_from_actor`).
+- **`GetAllActorsOfClass`: the `ActorClass` pin `DefaultObject` MUST be quoted** (`="/Script/..."`).
+  Unquoted -> `ActorClass=null` -> 0 results -> silent empty loop.
+- Exclude **mountable creatures** (horses) and **players** (`GetPlayerState` valid = a player on any
+  instance; `IsPlayerControlled` is false for other players' sim-proxies) from any "seat attached
+  characters" loop, or you apply human anims to horse skeletons (breaks the ridden horse -> rider offset).
+- Builder: `dev/c2_build.py` (`BP_MountedFollowerManager`, MgrVersion 25). Stamp a version int on the
+  CDO so you can tell which class actually spawned. See memory `mp-mounted-followers-findings`.
+
 ## Architecture decision
 
 Hybrid, intentionally small — **no transpiler, no MCP, no plugin**:
