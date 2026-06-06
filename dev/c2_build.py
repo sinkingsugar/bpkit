@@ -276,6 +276,13 @@ animMC = var_self("MountIdleAnim", (1300, -1600))
 g.wire(animMC, "MountIdleAnim", plMC, "NewAnimToPlay", exec=False)
 g.wire(meshMC, "Mesh", plMC, "self", exec=False)
 g.wire(amMC, "then", plMC, "execute", exec=True)
+# RESET branch: not attached -> AnimBlueprint. Un-seats dismounted followers on CLIENTS (Pass D's
+# server-side reset doesn't replicate). SetAnimationMode early-returns when already in that mode,
+# so this is a no-op for every non-seated character -> safe to run on all of them each tick.
+amResetMC = bare_call("SetAnimationMode", SMC, (1500, -1100))
+set_default(amResetMC, "InAnimationMode", "AnimationBlueprint", "byte", enum="EAnimationMode")
+g.wire(meshMC, "Mesh", amResetMC, "self", exec=False)
+g.wire(bAttMC, "else", amResetMC, "execute", exec=True)
 
 tick = g.event("ReceiveTick")
 # Manager EXISTS on clients (RemoteRole=SimulatedProxy, live-confirmed). DEBUG v17: print
@@ -467,6 +474,13 @@ relp = setRel.pin("NewRelativeLocation"); relp.dir = "EGPD_Input"
 type_struct(relp, "/Script/CoreUObject.Vector"); relp.set("DefaultValue", '"0.000000,0.000000,90.000000"')
 g.wire(loopB, "Array Element", setRel, "self", exec=False)
 chain.then(setRel)
+# correct the ~90deg yaw the 'attachrider' socket snaps to (relative rotation replicates with the
+# attach). If it ends up flipped, swap -90 -> 90.
+setRot = bare_call("K2_SetActorRelativeRotation", ACTOR, (4100, 950))
+rotp = setRot.pin("NewRelativeRotation"); rotp.dir = "EGPD_Input"
+type_struct(rotp, "/Script/CoreUObject.Rotator"); rotp.set("DefaultValue", '"0.000000,-90.000000,0.000000"')
+g.wire(loopB, "Array Element", setRot, "self", exec=False)
+chain.then(setRot)
 disable = bare_call("DisableMovement", CMC, (4350, 750))
 g.wire(rMove, "CharacterMovement", disable, "self", exec=False)
 chain.then(disable)
@@ -538,7 +552,7 @@ print("inject:", bp.inject(FULL, text, graph_name="EventGraph"))
 gc = unreal.load_object(None, FULL + "_C")
 if gc:
     cdo = unreal.get_default_object(gc)
-    cdo.set_editor_property("MgrVersion", 23)
+    cdo.set_editor_property("MgrVersion", 24)
     # ALWAYS RELEVANT: a logic actor (hidden root, no collision) is otherwise NOT relevant to
     # clients, so it never replicates there -> no client instance -> its tick/multicast never reach
     # clients (the root cause of every "host-only" result). Always Relevant = it exists + ticks on
@@ -549,7 +563,7 @@ if gc:
         cdo.set_editor_property("MountIdleAnim", anim_obj)
         print("CDO MountIdleAnim set:", anim_obj.get_name())
     unreal.EditorAssetLibrary.save_asset(PATH)
-    print("CDO MgrVersion=23 + always_relevant stamped")
+    print("CDO MgrVersion=24 + always_relevant stamped")
 txt = bp.export_nodes(bp.graph_nodes(graph_ptr))
 import re
 orphans = re.findall(r'PinName="([^"]+)"[^)]*?bOrphanedPin=True', txt)
