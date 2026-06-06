@@ -7,7 +7,7 @@ paths: bpkit/**, mods/**, examples/**, tests/**
 bpkit drives Blueprints by shipping Python into the running editor over remote-exec; the editor's own compiler is the validator. Standing rules for any BP task:
 
 **Run** payloads with the bundled Python via `ue_run.py` (path = `bpkit.config.BUNDLED_PYTHON`, or `$env:BPKIT_PYTHON`; bare `python` may hit the Windows Store alias):
-`& $py ue_run.py <payload.py>`. Liveness: `& $py ue_run.py bpkit/ops/ping.py`.
+`& $py ue_run.py <payload.py>`. Liveness: `& $py ue_run.py bpkit/ops/ping.py`. Native-bridge health: `& $py ue_run.py bpkit/ops/selftest.py` (or `/setup`) — if a symbol FAILs to resolve on a build, re-derive its name with `bpkit.pe` and patch `SYM`; don't assume the bridge is broken.
 
 **Safety (non-negotiable):**
 - Author/compile only with Play STOPPED — check `unreal.get_editor_subsystem(unreal.LevelEditorSubsystem).is_in_play_in_editor()` first; never compile during PIE (breaks live instances).

@@ -407,3 +407,32 @@ def scratch_blueprint(pkg="/Game/_Scratch", name="BP_Scratch", parent=None):
                                "(stale redirector? try a fresh name)" % path)
         eal.save_asset(path)
     return bp, bp.get_path_name()
+
+
+# ----------------------------------------------------------------------------
+# diagnostics
+# ----------------------------------------------------------------------------
+def selftest():
+    """Diagnose the native bridge against the CURRENTLY loaded editor build, without
+    mutating anything: resolve every exported symbol bpkit needs, then make one real
+    read-only call to confirm marshalling + calling convention actually work.
+
+    Returns {ok, resolved:{key:hex}, failed:{key:err}, functional}. A `failed` entry
+    means that symbol's decorated name differs on this build (or it isn't an editor
+    build that exports it) -- re-derive the name with bpkit.pe and patch SYM rather
+    than treating the bridge as broken. `functional` is the StaticFindObject probe
+    (True = a real native call round-tripped)."""
+    resolved, failed = {}, {}
+    for key in SYM:
+        try:
+            resolved[key] = hex(resolve(key))
+        except Exception as e:                       # report, never raise
+            failed[key] = str(e)
+    functional = None
+    if "StaticFindObject" in resolved:
+        try:
+            functional = bool(find_object("/Script/Engine.Actor"))   # always-loaded UClass
+        except Exception as e:
+            functional = "error: " + str(e)
+    return {"ok": (not failed) and functional is True,
+            "resolved": resolved, "failed": failed, "functional": functional}
