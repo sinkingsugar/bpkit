@@ -190,13 +190,65 @@ def get_item(arr_node, arr_pin, idx_node, idx_pin, elem_sub, pos):
     g.wire(arr_node, arr_pin, n, "Array", exec=False)
     g.wire(idx_node, idx_pin, n, "Dimension 1", exec=False)
     return n
+def get_all_actors(cls_path, pos):
+    """GameplayStatics.GetAllActorsOfClass(cls_path) -> OutActors (object array). ActorClass is a
+    class-wrapper pin set via DefaultObject; OutActors typed to the class."""
+    n = g.call("GetAllActorsOfClass", GS, pos=pos)
+    ap = n.pin("ActorClass"); ap.dir = "EGPD_Input"
+    ap.set("PinType.PinCategory", '"class"')
+    ap.set("PinType.PinSubCategoryObject", "/Script/CoreUObject.Class'/Script/Engine.Actor'")
+    ap.set("PinType.bIsUObjectWrapper", "True"); ap.set("DefaultObject", cls_path)
+    # OutActors is Actor-typed (the wildcard output won't take a narrower type on paste); the
+    # runtime ActorClass default still filters to cls_path, so contents are cls_path instances.
+    op = n.pin("OutActors"); op.dir = "EGPD_Output"
+    _stype(op, "object", "/Script/CoreUObject.Class'/Script/Engine.Actor'", "Array")
+    return n
 
 tick = g.event("ReceiveTick")
-# SERVER-AUTHORITATIVE: gate the whole tick to HasAuthority. On clients this does nothing;
-# the actor-attach + movement/collision freeze done on the server replicate down to them.
-haz = g.call("HasAuthority", ACTOR, pos=(-250, 0))   # self-context (the manager actor)
-bAuth = g.branch(pos=(-50, 0))
-g.wire(tick, "then", bAuth, "execute", exec=True)
+# --- COSMETIC PASS (NOT authority-gated; runs on EVERY instance, incl. clients) ---
+# The actor-attach replicates, so each client can detect which followers are stowed (attached to a
+# horse) and apply the seated single-node anim LOCALLY -- single-node anim doesn't replicate, so
+# this is how the rider looks seated for everyone. Gameplay (attach/freeze) stays server-only below.
+getAllC = get_all_actors(CONAN, (0, -1000))
+loopC = g.foreach(ACTOR, pos=(250, -1000))   # iterate as Actor (OutActors is Actor-typed)
+g.wire(getAllC, "OutActors", loopC, "Array", exec=False)
+g.wire(tick, "then", getAllC, "execute", exec=True)
+g.wire(getAllC, "then", loopC, "Exec", exec=True)
+# cast each Actor element to ConanCharacter (always succeeds for our filtered list; needed for Mesh)
+castC = cast_node(CONAN, (500, -1000))
+g.wire(loopC, "Array Element", castC, "Object", exec=False)
+g.wire(loopC, "LoopBody", castC, "execute", exec=True)
+CC = (castC, "AsConan Character")
+# stowed? = attached to a horse (attachment replicates, so clients see it)
+getParC = g.call("GetAttachParentActor", ACTOR, pos=(750, -800))
+g.wire(loopC, "Array Element", getParC, "self", exec=False)
+parVC = g.call("IsValid", KSL, pos=(950, -800))
+g.wire(getParC, "ReturnValue", parVC, "Object", exec=False)
+bAttC = g.branch(pos=(750, -1000))
+g.wire(castC, "then", bAttC, "execute", exec=True)
+g.wire(parVC, "ReturnValue", bAttC, "Condition", exec=False)
+meshC = comp_of(CC[0], CC[1], "Mesh", (1000, -1150))
+# attached -> seat (single-node mounted-idle, full body)
+amodeC = bare_call("SetAnimationMode", SMC, (1000, -1000))
+set_default(amodeC, "InAnimationMode", "AnimationSingleNode", "byte", enum="EAnimationMode")
+g.wire(meshC, "Mesh", amodeC, "self", exec=False)
+g.wire(bAttC, "then", amodeC, "execute", exec=True)
+playC = bare_call("PlayAnimation", SMC, (1250, -1000))
+set_default(playC, "bLooping", "true", "bool")
+animGetC = var_self("MountIdleAnim", (1000, -1300))
+g.wire(animGetC, "MountIdleAnim", playC, "NewAnimToPlay", exec=False)
+g.wire(meshC, "Mesh", playC, "self", exec=False)
+g.wire(amodeC, "then", playC, "execute", exec=True)
+# NOT attached -> reset to AnimBlueprint (dismounted followers stop being frozen seated)
+amodeC2 = bare_call("SetAnimationMode", SMC, (1000, -650))
+set_default(amodeC2, "InAnimationMode", "AnimationBlueprint", "byte", enum="EAnimationMode")
+g.wire(meshC, "Mesh", amodeC2, "self", exec=False)
+g.wire(bAttC, "else", amodeC2, "execute", exec=True)
+
+# --- SERVER-AUTHORITATIVE gameplay (after the cosmetic pass) ---
+haz = g.call("HasAuthority", ACTOR, pos=(-250, 250))
+bAuth = g.branch(pos=(-50, 250))
+g.wire(loopC, "Completed", bAuth, "execute", exec=True)
 g.wire(haz, "ReturnValue", bAuth, "Condition", exec=False)
 getP = g.call("GetPlayerCharacter", GS, pos=(0, 350))
 g.typed_input(getP, "PlayerIndex", "0", "int")
@@ -436,13 +488,13 @@ print("inject:", bp.inject(FULL, text, graph_name="EventGraph"))
 gc = unreal.load_object(None, FULL + "_C")
 if gc:
     cdo = unreal.get_default_object(gc)
-    cdo.set_editor_property("MgrVersion", 13)
+    cdo.set_editor_property("MgrVersion", 14)
     anim_obj = unreal.load_object(None, ANIM)
     if anim_obj:
         cdo.set_editor_property("MountIdleAnim", anim_obj)
         print("CDO MountIdleAnim set:", anim_obj.get_name())
     unreal.EditorAssetLibrary.save_asset(PATH)
-    print("CDO MgrVersion=13 stamped")
+    print("CDO MgrVersion=14 stamped")
 txt = bp.export_nodes(bp.graph_nodes(graph_ptr))
 import re
 orphans = re.findall(r'PinName="([^"]+)"[^)]*?bOrphanedPin=True', txt)
