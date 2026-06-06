@@ -217,15 +217,9 @@ def mc_event(name, pos):
 # clients, so this applies the seated single-node anim LOCALLY on each client. (v14 logic, which was
 # correct -- it just never ran on clients because the manager wasn't relevant.) ===
 gaC = get_all_actors(CONAN, (300, -1300))
-# DEBUG: how many actors does GetAllActorsOfClass return? "GAC=0" => the class filter is broken
-# (loop never iterates -> never reaches the seat). Read off the server log.
-lenGAC = arr_fn("Array_Length", ir.obj_path(ACTOR), (550, -1500))
-g.wire(gaC, "OutActors", lenGAC, "TargetArray", exec=False)
-cntPr = dbg_int("GAC=", lenGAC, "ReturnValue", (550, -1750))
-g.wire(gaC, "then", cntPr, "execute", exec=True)
 loopMC = g.foreach(ACTOR, pos=(550, -1300))
 g.wire(gaC, "OutActors", loopMC, "Array", exec=False)
-g.wire(cntPr, "then", loopMC, "Exec", exec=True)
+g.wire(gaC, "then", loopMC, "Exec", exec=True)
 castMC = cast_node(CONAN, (800, -1300))
 g.wire(loopMC, "Array Element", castMC, "Object", exec=False)
 g.wire(loopMC, "LoopBody", castMC, "execute", exec=True)
@@ -240,36 +234,23 @@ meshMC = comp_of(castMC, "AsConan Character", "Mesh", (1300, -1450))
 amMC = bare_call("SetAnimationMode", SMC, (1300, -1300))
 set_default(amMC, "InAnimationMode", "AnimationSingleNode", "byte", enum="EAnimationMode")
 g.wire(meshMC, "Mesh", amMC, "self", exec=False)
-# DEBUG: does the loop REACH the seat branch on the client? (shows "SEAT-HIT" on the instance's
-# screen -- "Client 1: SEAT-HIT" => loop reaches seat there => single-node anim is the remaining bug)
-# EXCLUDE THE PLAYER: the mounted player is also attached to a horse (natively); applying our
-# single-node anim to it fights the native mount and sinks the player into the ground. Only seat
-# AI followers -> skip player-controlled pawns.
+# EXCLUDE THE PLAYER: a player pawn has a valid PlayerState on every instance (replicates), unlike
+# IsPlayerControlled. (Players aren't actor-attached when mounted so they rarely hit this, but safe.)
 getPSMC = g.call("GetPlayerState", "/Script/Engine.Pawn", pos=(1050, -1550))
 g.wire(castMC, "AsConan Character", getPSMC, "self", exec=False)
-isPlayerMC = g.call("IsValid", KSL, pos=(1180, -1550))   # valid PlayerState => a player on ANY instance
+isPlayerMC = g.call("IsValid", KSL, pos=(1180, -1550))
 g.wire(getPSMC, "ReturnValue", isPlayerMC, "Object", exec=False)
 bPlayerMC = g.branch(pos=(1280, -1300))
 g.wire(bAttMC, "then", bPlayerMC, "execute", exec=True)
 g.wire(isPlayerMC, "ReturnValue", bPlayerMC, "Condition", exec=False)
-# DEBUG: print the NAME of whatever the loop seats -> tells us if it's wrongly touching the player
-nameMC = g.call("GetDisplayName", KSL, pos=(1300, -1780))
-g.wire(castMC, "AsConan Character", nameMC, "Object", exec=False)
-catSeat = g.call("Concat_StrStr", KSTR, pos=(1300, -1680))
-g.typed_input(catSeat, "A", "SEAT:", "string")
-g.wire(nameMC, "ReturnValue", catSeat, "B", exec=False)
-seatHit = g.call("PrintString", KSL, pos=(1300, -1580))
-g.wire(catSeat, "ReturnValue", seatHit, "InString", exec=False)
-# EXCLUDE HORSES: the loop was seating mountable creatures (BP_NPC_Mounts_Horse) -> the human
-# mounted-idle anim on a HORSE skeleton breaks it; the RIDDEN horse breaking is what offsets the
-# player. Only seat non-mountable humanoid followers.
+# EXCLUDE HORSES: a mounted creature is attached to its rider, so the loop saw it "attached" and
+# applied the HUMAN mounted-idle anim to a HORSE skeleton -> broke the ridden horse -> player offset.
 isMtblMC = g.call("IsMountable", CONAN, pos=(1280, -1150))
 g.wire(castMC, "AsConan Character", isMtblMC, "self", exec=False)
 bMtblMC = g.branch(pos=(1500, -1300))
 g.wire(bPlayerMC, "else", bMtblMC, "execute", exec=True)
 g.wire(isMtblMC, "ReturnValue", bMtblMC, "Condition", exec=False)
-g.wire(bMtblMC, "else", seatHit, "execute", exec=True)   # not player AND not mountable -> seat
-g.wire(seatHit, "then", amMC, "execute", exec=True)
+g.wire(bMtblMC, "else", amMC, "execute", exec=True)   # not player AND not mountable -> seat
 plMC = bare_call("PlayAnimation", SMC, (1550, -1300))
 set_default(plMC, "bLooping", "true", "bool")
 animMC = var_self("MountIdleAnim", (1300, -1600))
@@ -285,20 +266,11 @@ g.wire(meshMC, "Mesh", amResetMC, "self", exec=False)
 g.wire(bAttMC, "else", amResetMC, "execute", exec=True)
 
 tick = g.event("ReceiveTick")
-# Manager EXISTS on clients (RemoteRole=SimulatedProxy, live-confirmed). DEBUG v17: print
-# HasAuthority every tick so the PIE log shows whether the BP ReceiveTick actually FIRES on client
-# instances ("auth=false" lines) -- that's Conan's ModController C++ behavior (no source for it).
+# Manager is Always Relevant, so it exists + ticks on every client. The cosmetic seat loop above is
+# NON-gated (runs on every instance); the gameplay below is server-only (HasAuthority).
 haz = g.call("HasAuthority", ACTOR, pos=(-250, 0))
-authS = g.call("Conv_BoolToString", KSTR, pos=(-520, -250))
-g.wire(haz, "ReturnValue", authS, "InBool", exec=False)
-catA = g.call("Concat_StrStr", KSTR, pos=(-330, -250))
-g.typed_input(catA, "A", "MGRTICK17 auth=", "string")
-g.wire(authS, "ReturnValue", catA, "B", exec=False)
-prT = g.call("PrintString", KSL, pos=(-250, -120))
-g.wire(catA, "ReturnValue", prT, "InString", exec=False)
 bAuth = g.branch(pos=(-50, 0))
-g.wire(tick, "then", prT, "execute", exec=True)
-g.wire(prT, "then", gaC, "execute", exec=True)             # NON-GATED cosmetic seat loop (every instance)
+g.wire(tick, "then", gaC, "execute", exec=True)            # NON-GATED cosmetic seat loop (every instance)
 g.wire(loopMC, "Completed", bAuth, "execute", exec=True)   # THEN the server-gated stow/gameplay
 g.wire(haz, "ReturnValue", bAuth, "Condition", exec=False)
 getP = g.call("GetPlayerCharacter", GS, pos=(0, 350))
@@ -392,9 +364,7 @@ g.wire(getTSC2, "ReturnValue", getFol, "self", exec=False)
 # clear SpareHorses + reset HumanoidCounter before (re)building the spare list each mount
 clrArr = arr_fn("Array_Clear", ir.obj_path(CONAN), (1900, 250))
 g.wire(arr_var("SpareHorses", ir.obj_path(CONAN), (1900, 470)), "SpareHorses", clrArr, "TargetArray", exec=False)
-stowDbg = dbg("STOW-TRANSITION", (2300, 430))
-g.wire(bMounted, "then", stowDbg, "execute", exec=True)
-g.wire(stowDbg, "then", clrArr, "execute", exec=True)
+g.wire(bMounted, "then", clrArr, "execute", exec=True)
 setHC0 = g.var_set("HumanoidCounter", "int", pos=(2150, 250)); setHC0.pin("HumanoidCounter").literal("0")
 g.wire(clrArr, "then", setHC0, "execute", exec=True)
 
@@ -478,7 +448,7 @@ chain.then(setRel)
 # attach). If it ends up flipped, swap -90 -> 90.
 setRot = bare_call("K2_SetActorRelativeRotation", ACTOR, (4100, 950))
 rotp = setRot.pin("NewRelativeRotation"); rotp.dir = "EGPD_Input"
-type_struct(rotp, "/Script/CoreUObject.Rotator"); rotp.set("DefaultValue", '"0.000000,-90.000000,0.000000"')
+type_struct(rotp, "/Script/CoreUObject.Rotator"); rotp.set("DefaultValue", '"0.000000,90.000000,0.000000"')
 g.wire(loopB, "Array Element", setRot, "self", exec=False)
 chain.then(setRot)
 disable = bare_call("DisableMovement", CMC, (4350, 750))
@@ -508,9 +478,7 @@ chain.then(setHC)
 # DISMOUNT branch: restore each humanoid follower (reverse of stow) -- replicates C1 build_restore
 loopD = g.foreach(CONAN, pos=(2100, 1700))
 g.wire(getFol, "ReturnValue", loopD, "Array", exec=False)
-restDbg = dbg("RESTORE-TRANSITION", (2100, 1520))
-g.wire(bMounted, "else", restDbg, "execute", exec=True)
-g.wire(restDbg, "then", loopD, "Exec", exec=True)
+g.wire(bMounted, "else", loopD, "Exec", exec=True)
 mtblD = g.call("IsMountable", CONAN, pos=(2350, 1930))
 g.wire(loopD, "Array Element", mtblD, "self", exec=False)
 bMtblD = g.branch(pos=(2350, 1700))
@@ -519,8 +487,6 @@ g.wire(mtblD, "ReturnValue", bMtblD, "Condition", exec=False)
 rMeshD = comp_of(loopD, "Array Element", "Mesh", (2650, 1900))
 rMoveD = comp_of(loopD, "Array Element", "CharacterMovement", (2650, 2100))
 chainD = Chain(bMtblD, "else")   # NOT mountable -> humanoid -> restore
-restHumDbg = dbg("RESTORE-HUMANOID", (2650, 1500))
-chainD.then(restHumDbg)
 detachD = actor_detach((2900, 1900))   # ACTOR-detach from the horse (replicates), keep world xform
 g.wire(loopD, "Array Element", detachD, "self", exec=False)
 chainD.then(detachD)
@@ -552,7 +518,7 @@ print("inject:", bp.inject(FULL, text, graph_name="EventGraph"))
 gc = unreal.load_object(None, FULL + "_C")
 if gc:
     cdo = unreal.get_default_object(gc)
-    cdo.set_editor_property("MgrVersion", 24)
+    cdo.set_editor_property("MgrVersion", 25)
     # ALWAYS RELEVANT: a logic actor (hidden root, no collision) is otherwise NOT relevant to
     # clients, so it never replicates there -> no client instance -> its tick/multicast never reach
     # clients (the root cause of every "host-only" result). Always Relevant = it exists + ticks on
@@ -563,7 +529,7 @@ if gc:
         cdo.set_editor_property("MountIdleAnim", anim_obj)
         print("CDO MountIdleAnim set:", anim_obj.get_name())
     unreal.EditorAssetLibrary.save_asset(PATH)
-    print("CDO MgrVersion=24 + always_relevant stamped")
+    print("CDO MgrVersion=25 + always_relevant stamped")
 txt = bp.export_nodes(bp.graph_nodes(graph_ptr))
 import re
 orphans = re.findall(r'PinName="([^"]+)"[^)]*?bOrphanedPin=True', txt)
