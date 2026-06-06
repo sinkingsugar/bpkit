@@ -83,6 +83,19 @@ external/sandboxed clients or a guardrailed tool menu.
 
 ## What the stock `unreal` Python API can / can't do (probed live 2026-06-04)
 
+> **FINDING UFUNCTION SIGNATURES — NEVER fire blind (crashes the editor).** Calling a native
+> UFunction with no/guessed args to make the error "reveal" the signature can null-deref and CRASH
+> the whole editor (cost two PIE sessions 2026-06-06; see memory `no-blind-native-ufunction-calls`).
+> Unreal's reflection already has every signature — read it:
+> - **Reflection docstring (preferred):** every reflected function auto-generates a `__doc__` with
+>   typed params + return. Native class: `unreal.ConanCharacter.bp_mount_server.__doc__`. BP class:
+>   `cls = unreal.load_object(None, "/Game/.../Foo.Foo_C"); t = type(unreal.get_default_object(cls)); print(t.start_emote.__doc__)`.
+> - **Enums:** `dir(unreal.CharacterEmotes)` lists the values; `<Enum>.<VALUE>.get_display_name()`.
+> - **BP graphs:** `bp_bridge.read_blueprint(path)` — the `K2Node_FunctionEntry` node lists typed
+>   param pins. PIE-independent, read-only.
+> Only after you know the real param TYPES, make ONE call with correct args. (TODO: a `ue_reflect.py`
+> helper module — dump any UFunction's param chain + any UEnum's values in one call.)
+
 CAN (fully automatable):
 - load / find / **create** assets (`AssetTools` + factories), duplicate into variants
 - add/remove **function graphs**, find event graph (`add_function_graph`, `find_event_graph`)
