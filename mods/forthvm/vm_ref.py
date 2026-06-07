@@ -7,6 +7,7 @@ in-game VM (Step(budget)) so the cooperative-coroutine design is validated here
 first. A cell is (tag, value): value is int / float / bool / (x,y,z) tuple.
 """
 import isa
+import math
 
 NUM = (isa.CT_INT, isa.CT_FLOAT)
 
@@ -96,6 +97,8 @@ class VM:
             elif op == isa.VEC_XYZ:
                 x, y, z = self.pop()[1]
                 self.push(isa.CT_FLOAT, x); self.push(isa.CT_FLOAT, y); self.push(isa.CT_FLOAT, z)
+            elif op == isa.SQRT:
+                a = self.pop(); self.push(isa.CT_FLOAT, math.sqrt(float(a[1])))
             elif op == isa.PRINT:
                 self.output.append(self.pop())
             elif op == isa.CALL:

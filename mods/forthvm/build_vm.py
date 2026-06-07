@@ -141,13 +141,15 @@ bF = branch(equal(isa.LIT_FLOAT, (1200, 300)), (1400, 300))
 bD = branch(equal(isa.DUP, (1200, 1200)), (1400, 1200))
 bM = branch(equal(isa.MUL, (1200, 1500)), (1400, 1500))
 bMV = branch(equal(isa.MK_VEC, (1200, 1800)), (1400, 1800))
+bSq = branch(equal(isa.SQRT, (1200, 2100)), (1400, 2100))
 bP = branch(equal(isa.PRINT, (1200, 600)), (1400, 600))
 bH = branch(equal(isa.HALT, (1200, 900)), (1400, 900))
 g.wire(setIP, "then", bF, "execute", exec=True)
 g.wire(bF, "Else", bD, "execute", exec=True)
 g.wire(bD, "Else", bM, "execute", exec=True)
 g.wire(bM, "Else", bMV, "execute", exec=True)
-g.wire(bMV, "Else", bP, "execute", exec=True)
+g.wire(bMV, "Else", bSq, "execute", exec=True)
+g.wire(bSq, "Else", bP, "execute", exec=True)
 g.wire(bP, "Else", bH, "execute", exec=True)
 
 # --- handler: LIT_FLOAT --- operand = Code[IP]; IP++; push Make(Type=1,F=Floats[operand])
@@ -298,6 +300,19 @@ g.wire(remZ, "then", setY, "execute", exec=True)
 g.wire(remY, "then", setX, "execute", exec=True)
 g.wire(remX, "then", addV, "execute", exec=True)
 
+# --- handler: SQRT (ENGINE CALL game word) --- pop float -> push KismetMath::Sqrt(f)
+sqSet, sqRem = pop_float_into("TmpAF", 3800)
+sqAF = g.var_get("TmpAF", "real", pos=(4500, 3700))
+sqrt = g.call("Sqrt", KMATH, pos=(4700, 3700)); g.wire(sqAF, "TmpAF", sqrt, "A", exec=False)
+mkSq = g.node("K2Node_MakeStruct", ["StructType=%s" % STYPE], base="MakeStruct", pos=(4900, 3700))
+mkSq.pin(F_PIN).typed("real", direction="EGPD_Input")
+g.wire(sqrt, "ReturnValue", mkSq, F_PIN, exec=False)
+dpSq = g.var_get("Data", "struct", STYPE, pos=(4900, 3840)); st(dpSq, "Data", "EGPD_Output", array=True)
+apSq = caf(g, "Array_Add", (5100, 3700)); st(apSq, "TargetArray", "EGPD_Input", array=True); st(apSq, "NewItem", "EGPD_Input")
+g.wire(dpSq, "Data", apSq, "TargetArray", exec=False); g.wire(mkSq, "ST_FCell", apSq, "NewItem", exec=False)
+g.wire(bSq, "Then", sqSet, "execute", exec=True)
+g.wire(sqRem, "then", apSq, "execute", exec=True)
+
 # inject + validate
 bp_ptr, gp = bp.find_graph(objpath, "EventGraph"); bp.clear_graph(bp_ptr, gp)
 print("inject ->", bp.inject(objpath, g.render(), graph_name="EventGraph"))
@@ -347,6 +362,17 @@ while inst.get_editor_property("Running") and s3 < 50:
 v = inst.get_editor_property("OutV")
 okv = abs(v.x - 1.0) < 1e-6 and abs(v.y - 2.0) < 1e-6 and abs(v.z - 3.0) < 1e-6
 print("RESULT  (1 2 3 vec3 .) steps=%d OutV=%s -> %s" % (s3, v, "PASS (1,2,3)" if okv else "FAIL"))
+
+# program 4: `16.0 sqrt .` -> 4.0  -- proves the VM CALLS AN ENGINE FUNCTION
+inst.set_editor_property("Data", [])
+inst.set_editor_property("Code", [isa.LIT_FLOAT, 0, isa.SQRT, isa.PRINT, isa.HALT])
+inst.set_editor_property("Floats", [16.0])
+inst.set_editor_property("IP", 0); inst.set_editor_property("Out", 0.0); inst.set_editor_property("Running", True)
+s4 = 0
+while inst.get_editor_property("Running") and s4 < 50:
+    inst.call_method("Step"); s4 += 1
+o4 = inst.get_editor_property("Out")
+print("RESULT  (16.0 sqrt .)  steps=%d Out=%s -> %s" % (s4, o4, "PASS 4.0 (engine call!)" if abs(o4 - 4.0) < 1e-6 else "FAIL"))
 EAS.destroy_actor(inst)
 if EAL.does_directory_exist("/Game/_Scratch/_vmgen"):
     EAL.delete_directory("/Game/_Scratch/_vmgen")

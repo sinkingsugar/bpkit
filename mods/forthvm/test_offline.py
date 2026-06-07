@@ -72,6 +72,10 @@ expect("budgeted run completes", not vm.running)
 expect("budgeted run -> 10000.0", vm.output and near(vm.output[0][1], 10000.0), repr(vm.output))
 expect("budgeted run took multiple ticks", ticks > 1, "ticks=%d" % ticks)
 
+# 8. engine "game word": 16.0 sqrt -> 4.0 (calls KismetMathLibrary::Sqrt in the BP VM)
+o = out("16.0 sqrt .")
+expect("sqrt: 16.0 -> 4.0", o and near(o[0][1], 4.0), repr(o))
+
 print("=== forthvm offline spec ===")
 ok = sum(1 for _, k, _ in _res if k)
 for name, k, detail in _res:

@@ -31,6 +31,7 @@ CALL     = 14   # + inline code addr  -> push IP to return stack, jump
 EXIT     = 15   # pop return stack -> IP  (end of a colon def)
 BRANCH   = 16   # + inline code addr  -> IP = addr
 ZBRANCH  = 17   # ( flag -- ) + inline addr -> if !flag IP = addr
+SQRT     = 18   # ( f -- f )  ENGINE CALL: KismetMathLibrary::Sqrt -- a "game word"
 
 OPNAME = {v: k for k, v in globals().items()
           if k.isupper() and isinstance(v, int) and k not in ("CT_INT", "CT_FLOAT",
@@ -45,4 +46,5 @@ PRIMITIVES = {
     "+": ADD, "-": SUB, "*": MUL,
     "vec3": MK_VEC, "xyz": VEC_XYZ,
     ".": PRINT,
+    "sqrt": SQRT,          # engine-call "game word" (proves the FFI: scripts call UFunctions)
 }
