@@ -63,6 +63,9 @@ SYM = {
     # void FBlueprintEditorUtils::RemoveNode(UBlueprint*, UEdGraphNode*, bool bDontRecompile)
     "RemoveNode": ("UnrealEditor-UnrealEd.dll",
                    b"?RemoveNode@FBlueprintEditorUtils@@SAXPEAVUBlueprint@@PEAVUEdGraphNode@@_N@Z"),
+    # bool FStructureEditorUtils::AddVariable(UUserDefinedStruct*, const FEdGraphPinType&)
+    "AddStructVariable": ("UnrealEditor-UnrealEd.dll",
+                          b"?AddVariable@FStructureEditorUtils@@SA_NPEAVUUserDefinedStruct@@AEBUFEdGraphPinType@@@Z"),
 }
 
 # ----------------------------------------------------------------------------
@@ -172,6 +175,25 @@ def find_object(name, outer=None, klass=None, exact=False):
     fn = proc("StaticFindObject", ctypes.c_void_p, ctypes.c_void_p,
               ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_bool)
     return fn(klass, outer, name, exact)
+
+
+def obj_addr(unreal_obj):
+    """Native address of a live `unreal` wrapper (UObject or struct value), parsed
+    from its repr -- UE Python reprs include the pointer: <... (0xADDR) ...>. Used to
+    pass an engine-built struct (e.g. an FEdGraphPinType) by-ref into a bridge call."""
+    import re
+    m = re.search(r"0x([0-9A-Fa-f]+)", repr(unreal_obj))
+    return int(m.group(1), 16) if m else None
+
+
+def add_struct_variable(struct_ptr, pintype_ptr):
+    """FStructureEditorUtils::AddVariable(UUserDefinedStruct*, const FEdGraphPinType&)
+    -> bool. struct_ptr: the UUserDefinedStruct* (find_object on its OBJECT path
+    '/Game/X/ST.ST', NOT the package path). pintype_ptr: address of an engine-built
+    FEdGraphPinType (BlueprintEditorLibrary.get_basic_type_by_name / get_struct_type,
+    then obj_addr()). Appends a member of that type (auto-named). Returns True on add."""
+    fn = proc("AddStructVariable", ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    return bool(fn(ctypes.c_void_p(struct_ptr), ctypes.c_void_p(pintype_ptr)))
 
 
 def get_all_graphs(bp_ptr):
