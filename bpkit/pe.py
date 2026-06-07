@@ -1,7 +1,7 @@
 """Dependency-free PE export-table dumper.
 
 Usage:
-    python pe_exports.py <dll> [substr1 substr2 ...]
+    python -m bpkit.pe <dll> [substr1 substr2 ...]
 
 With no substrings: prints the count of exports.
 With substrings: prints every exported name containing any substring (case-insensitive).

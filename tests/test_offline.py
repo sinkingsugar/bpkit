@@ -97,21 +97,8 @@ def test_config():
     expect("endpoints are ints", isinstance(config.COMMAND_PORT, int) and isinstance(config.MULTICAST_PORT, int))
 
 
-# --- compat shims: the old names ARE the canonical objects -----------------
-def test_shims_are_canonical():
-    import bp_ir
-    import bp_author
-    import bp_compact
-    import bp_bridge  # imports ctypes only; resolves no editor symbols at import
-    from bpkit import bridge
-    expect("bp_ir.Graph is ir.Graph", bp_ir.Graph is ir.Graph)
-    expect("bp_author.Graph is author.Graph", bp_author.Graph is author.Graph)
-    expect("bp_compact.parse_nodes is compact.parse_nodes", bp_compact.parse_nodes is compact.parse_nodes)
-    expect("bp_bridge.read_blueprint is bridge.read_blueprint", bp_bridge.read_blueprint is bridge.read_blueprint)
-
-
 TESTS = [test_ir_roundtrip, test_ir_wire_unwire, test_ir_typed_pin, test_author_render,
-         test_compact, test_config, test_shims_are_canonical]
+         test_compact, test_config]
 
 print("=== bpkit offline unit tests (no editor) ===")
 for t in TESTS:

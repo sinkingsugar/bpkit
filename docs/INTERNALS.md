@@ -41,13 +41,10 @@ Gotchas that cost real time:
   ```python
   import sys
   for m in list(sys.modules):
-      if m == "bpkit" or m.startswith("bpkit.") or m in (
-              "bp_bridge", "bp_ir", "bp_author", "bp_compact"):
+      if m == "bpkit" or m.startswith("bpkit."):
           sys.modules.pop(m, None)
   ```
-  (or `importlib.reload` in dependency order: compact → ir → bridge). Reload the
-  *canonical* `bpkit.*` modules; reloading only the root shims leaves them
-  pointing at a stale cached package.
+  (or `importlib.reload` in dependency order: compact → ir → bridge).
 - **Never author/compile a Blueprint during PIE.** It breaks live instances'
   function resolution. Author + compile with Play stopped; only read/call during
   Play. Check first: `unreal.get_editor_subsystem(unreal.LevelEditorSubsystem).is_in_play_in_editor()`.

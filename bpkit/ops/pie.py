@@ -1,6 +1,6 @@
 """pie - drive Play-In-Editor + suppress deadlocking modals from Python.
 
-RUN INSIDE THE EDITOR (ship via ue_run.py). Library, like bp_bridge.
+RUN INSIDE THE EDITOR (ship via ue_run.py). Library, like bpkit.bridge.
 
 Why this exists: testing the mod meant asking the user to press Play / Stop and to
 dismiss modal dialogs by hand. Modals are the nasty bit -- a Slate modal runs a
@@ -9,7 +9,7 @@ remote_execution, so while a modal is up our commands never run (looks like a de
 channel). Two-pronged fix:
 
   1. PREVENT (this module): flip the engine global `GIsRunningUnattendedScript` to
-     true via ctypes-by-address (same trick as bp_bridge). With it set,
+     true via ctypes-by-address (same trick as bpkit.bridge). With it set,
      FMessageDialog::Open returns the dialog's DEFAULT answer without ever showing a
      modal -- so scripted Play/compile/save actions can't deadlock us.
   2. RESCUE (bpkit/ops/dismiss_modal.py, host-side): if a modal slips through anyway,

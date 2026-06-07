@@ -1,22 +1,22 @@
-"""bp_compact - compress Unreal Blueprint copy/paste node text into a dense,
+"""bpkit.compact - compress Unreal Blueprint copy/paste node text into a dense,
 token-cheap, navigable outline for an LLM to reason over.
 
-The raw export from bp_bridge.export_nodes / read_blueprint is enormous (~20
+The raw export from bridge.export_nodes / read_blueprint is enormous (~20
 boilerplate flags per pin line; a single blueprint is megabytes). This collapses
 it to a structural view: per node a one-line header (name / type / semantic
 label) plus only the *connected* pins as edges and any non-default literal
 inputs. Unconnected default pins and all the boilerplate flags are dropped.
 
 Lossy by design -- it's the NAVIGATION layer. When exact text for a node is
-needed, re-export just that node losslessly (bp_bridge.export_nodes([ptr])).
+needed, re-export just that node losslessly (bridge.export_nodes([ptr])).
 
 Pure stdlib, no unreal/ctypes -> runs offline on a dump file or on text returned
 from the editor. CLI:
 
-    python bp_compact.py <dump.txt>              # BP summary + every graph
-    python bp_compact.py <dump.txt> --summary    # just the BP/graph overview
-    python bp_compact.py <dump.txt> --graph NAME  # one graph, compact
-    python bp_compact.py <dump.txt> --node NAME   # which graph + raw-ish detail
+    python -m bpkit.compact <dump.txt>              # BP summary + every graph
+    python -m bpkit.compact <dump.txt> --summary    # just the BP/graph overview
+    python -m bpkit.compact <dump.txt> --graph NAME  # one graph, compact
+    python -m bpkit.compact <dump.txt> --node NAME   # which graph + raw-ish detail
 
 Output legend (per node):
     <name>  <Type>  <label>

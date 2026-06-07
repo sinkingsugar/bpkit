@@ -1,9 +1,9 @@
-"""bp_ir - unified semantic IR for Blueprint graphs.
+"""bpkit.ir - unified semantic IR for Blueprint graphs.
 
 One model bridging all three operations:
     parse(text)      verbose copy/paste text  ->  Graph  (full fidelity)
     Graph.render()   Graph  ->  import text    (re-injectable)
-    Graph.compact()  Graph  ->  navigable view (delegates to bp_compact)
+    Graph.compact()  Graph  ->  navigable view (delegates to bpkit.compact)
     edit ops         find / add / wire / remove on a Graph
 
 Fidelity: a PARSED node keeps every pin attribute verbatim (PinType.*, defaults,
@@ -14,7 +14,7 @@ intent -- UE reconstructs the rest on import.
 Editing existing graphs uses 'replace': ImportNodesFromText cross-links only
 within the pasted set, so to rewire pre-existing nodes you parse the whole graph,
 mutate the IR (new wires are now intra-set), clear the graph
-(bp_bridge.clear_graph), and re-import Graph.render() as one set. See
+(bridge.clear_graph), and re-import Graph.render() as one set. See
 examples/edit_graph.py.
 
 Pure stdlib -- parse/render/compact run offline; only the apply step needs the editor.

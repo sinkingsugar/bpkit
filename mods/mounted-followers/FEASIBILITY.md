@@ -389,7 +389,7 @@ compiled Blueprint and live-verified (§10 / C1 done).** Remaining to make it a 
 
 The §8 recipe was driven by raw Python in the prototype. C1 re-expressed it as **compiled
 Blueprint logic** so it can ship in a mod (no Python/C++ at runtime), authored entirely from
-outside the editor via node-text injection (`bp_author`/`bp_ir` → `bp_bridge.inject` → compile).
+outside the editor via node-text injection (`bpkit.author`/`bpkit.ir` → `bpkit.bridge.inject` → compile).
 
 **Artifact:** `/Game/_Scratch/BP_MF_Recipe` (Actor BP, will move onto the C2 ModController).
 - Member vars (instance-editable): `Rider`, `Mount` (ConanCharacter refs), `MountIdleAnim`

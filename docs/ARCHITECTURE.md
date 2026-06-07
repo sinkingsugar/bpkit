@@ -97,10 +97,6 @@ separately in [CONAN-NOTES.md](CONAN-NOTES.md).
 | `bpkit.config` | install paths + endpoints, `BPKIT_*`-overridable | host-side |
 | `ue_run.py` | host-side driver: ship a local `.py` into the running editor, echo its output | host-side |
 
-`bp_bridge` / `bp_ir` / `bp_author` / `bp_compact` / `pe_exports` remain at the
-repo root as **thin compatibility shims** re-exporting the `bpkit.*` modules, so
-older in-editor payloads that `import bp_bridge` keep working unchanged.
-
 ### How a typical task composes them
 1. `bpkit.bridge.read_blueprint(path)` → node text for every graph.
 2. `bpkit.compact` → navigate it cheaply; drill into one node losslessly when needed.

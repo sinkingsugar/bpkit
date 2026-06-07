@@ -17,8 +17,8 @@ def _env(key, default):
 
 
 # Repo root = this package's parent dir. ue_run injects it onto the editor's
-# sys.path so in-editor payloads can `import bpkit` / `import bp_bridge` without
-# hardcoding an absolute path in every script.
+# sys.path so in-editor payloads can `import bpkit` without hardcoding an
+# absolute path in every script.
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # The UE install (managed Epic Dev Kit). Override: BPKIT_ENGINE_ROOT.

@@ -1,4 +1,4 @@
-"""Deterministic unit tests for the BP-authoring toolchain (bp_ir + bp_bridge).
+"""Deterministic unit tests for the BP-authoring toolchain (bpkit.ir + bpkit.bridge).
 
 Each test authors a throwaway Blueprint, injects + compiles it, spawns an instance in
 the editor world, drives it via call_method, and ASSERTS on read-back state -- no PIE,

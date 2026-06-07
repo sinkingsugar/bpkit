@@ -1,4 +1,4 @@
-"""bp_bridge - read & write Unreal Engine 5.6 Blueprint node graphs from Python.
+"""bpkit.bridge - read & write Unreal Engine 5.6 Blueprint node graphs from Python.
 
 RUN THIS INSIDE THE EDITOR (ship it over remote_execution with ue_run.py). It is
 NOT a standalone module: it resolves the editor's exported C++ functions by
@@ -35,7 +35,7 @@ single-node exports reproduces the multi-node text losslessly.
 """
 import ctypes
 
-# --- exported symbols: exact MSVC-decorated names (find them with pe_exports.py) ---
+# --- exported symbols: exact MSVC-decorated names (find them with `python -m bpkit.pe`) ---
 SYM = {
     # UObject* StaticFindObject(UClass*, UObject* Outer, const TCHAR* Name, bool ExactClass)
     "StaticFindObject": ("UnrealEditor-CoreUObject.dll",
