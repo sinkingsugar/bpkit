@@ -191,7 +191,13 @@ def add_struct_variable(struct_ptr, pintype_ptr):
     -> bool. struct_ptr: the UUserDefinedStruct* (find_object on its OBJECT path
     '/Game/X/ST.ST', NOT the package path). pintype_ptr: address of an engine-built
     FEdGraphPinType (BlueprintEditorLibrary.get_basic_type_by_name / get_struct_type,
-    then obj_addr()). Appends a member of that type (auto-named). Returns True on add."""
+    then obj_addr()). Appends a member of that type (auto-named). Returns True on add.
+
+    GOTCHA: keep the pin wrapper ALIVE across this call. The FEdGraphPinType is owned
+    by the Python wrapper; if it's GC'd before this reads the address, the address is
+    freed memory and AddVariable silently falls back to an int member. So hold a
+    reference (e.g. `pin = get_basic_type_by_name(...); add_struct_variable(s, obj_addr(pin))`),
+    don't inline it. Pin category names: int / int64 / bool, and "real" for float."""
     fn = proc("AddStructVariable", ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
     return bool(fn(ctypes.c_void_p(struct_ptr), ctypes.c_void_p(pintype_ptr)))
 
