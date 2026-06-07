@@ -4,17 +4,16 @@
 
 Plain ImportNodesFromText can't wire a new node to a pre-existing one (paste only
 cross-links within the pasted set). So to rewire existing nodes we: read the graph
--> bp_ir -> mutate (the new wire is now intra-set) -> clear_graph -> re-import the
-whole rendered graph -> compile. Here we drop in two UNWIRED nodes, then edit the
-graph to connect them."""
-import sys, importlib
-sys.path.insert(0, r"C:\Users\sugar\devel\conan")
-import bp_compact, bp_ir, bp_bridge
+-> bpkit.ir -> mutate (the new wire is now intra-set) -> clear_graph -> re-import
+the whole rendered graph -> compile. Here we drop in two UNWIRED nodes, then edit
+the graph to connect them."""
+import importlib
+from bpkit import bridge, ir, compact
 # the editor process is long-lived and caches modules; reload so edits to the
 # library are picked up without restarting the editor (in dependency order).
-for _m in (bp_compact, bp_ir, bp_bridge):
+for _m in (compact, ir, bridge):
     importlib.reload(_m)
-bp = bp_bridge
+bp = bridge
 import unreal
 
 asset_obj, full = bp.scratch_blueprint(name="BP_ReplaceDemo")
@@ -23,7 +22,7 @@ bp_ptr, graph_ptr = bp.find_graph(full, "EventGraph")
 bp.clear_graph(bp_ptr, graph_ptr)       # clean slate (deterministic across reruns)
 
 # --- set up an "existing" graph: a CustomEvent and a PrintString, UNWIRED ---
-g0 = bp_ir.Graph("EventGraph")
+g0 = ir.Graph("EventGraph")
 g0.custom_event("Trigger")
 g0.call("PrintString", "/Script/Engine.KismetSystemLibrary",
         inputs={"InString": "edited in by replace-flow"}, pos=(360, 0))
@@ -31,10 +30,10 @@ bp.inject(full, g0.render())            # import + compile + save (no wire yet)
 
 print("=== BEFORE edit ===")
 text = bp.export_nodes(bp.graph_nodes(graph_ptr))
-print(bp_ir.Graph.parse_one(text, "EventGraph").compact())
+print(ir.Graph.parse_one(text, "EventGraph").compact())
 
 # --- EDIT: read -> IR -> wire the two existing nodes -> replace ---
-g = bp_ir.Graph.parse_one(text, "EventGraph")
+g = ir.Graph.parse_one(text, "EventGraph")
 ev = g.by_type("CustomEvent")[0]
 call = g.by_type("CallFunction")[0]
 g.wire(ev, "then", call, "execute")     # new edge, now intra-set
@@ -49,7 +48,7 @@ print("\nreplace: removed %d, re-imported %d nodes, compiled" % (removed, pasted
 print("\n=== AFTER edit ===")
 # graph_nodes reads UEdGraph::Nodes (authoritative) -> no undo-buffer orphans
 text2 = bp.export_nodes(bp.graph_nodes(graph_ptr))
-g2 = bp_ir.Graph.parse_one(text2, "EventGraph")
+g2 = ir.Graph.parse_one(text2, "EventGraph")
 print(g2.compact())
 ev2 = g2.by_type("CustomEvent")[0]
 print("Trigger.then is now wired:", bool(ev2.pin("then").links))

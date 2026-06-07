@@ -3,14 +3,16 @@
     python ue_run.py examples/read_blueprint.py
 
 Edit ASSET to point at your blueprint. The full node text is written to a
-gitignored dump_*.txt next to the repo (it can be large)."""
-import sys
-sys.path.insert(0, r"C:\Users\sugar\devel\conan")   # repo root (adjust if relocated)
-import bp_bridge as bp
+gitignored dump_*.txt at the repo root (it can be large). ue_run injects the
+repo root onto the editor's sys.path, so no hardcoded path is needed here."""
+import os
+from bpkit import bridge as bp
+from bpkit import config
 
-ASSET = "/Game/Sorcery/Glider/BP_BatDemonGlider"     # <-- your blueprint
+# asset path from `/bp-read <asset>` (ue_run forwards it), else this default:
+ASSET = (config.argv() or ["/Game/Sorcery/Glider/BP_BatDemonGlider"])[0]
 FULL = ASSET + "." + ASSET.rsplit("/", 1)[1]
-OUT = r"C:\Users\sugar\devel\conan\dump_%s.txt" % ASSET.rsplit("/", 1)[1]
+OUT = os.path.join(config.REPO_ROOT, "dump_%s.txt" % ASSET.rsplit("/", 1)[1])
 
 graphs = bp.read_blueprint(FULL)
 print("blueprint %s -> %d graph(s)" % (ASSET, len(graphs)))

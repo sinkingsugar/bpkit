@@ -1,13 +1,25 @@
-import sys, time
+"""Remote-execution connectivity smoke test (standalone client).
 
-PLUGIN_PY = r"C:\Program Files\Epic Games\CEUE5Devkit\Engine\Plugins\Experimental\PythonScriptPlugin\Content\Python"
-sys.path.insert(0, PLUGIN_PY)
+    python examples/smoketest.py
 
+Opens its OWN remote_execution connection (does NOT go through ue_run) and runs
+a tiny payload in the editor. Paths/endpoints come from bpkit.config
+(override via BPKIT_* env vars).
+"""
+import os
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root
+from bpkit import config
+
+sys.path.insert(0, config.PLUGIN_PY)
 import remote_execution as remote
 
 rec = remote.RemoteExecution()
 rec.start()
-print("[*] searching for editor nodes (multicast 239.0.0.1:6766)...")
+print("[*] searching for editor nodes (multicast %s:%d)..."
+      % (config.MULTICAST_GROUP, config.MULTICAST_PORT))
 
 node = None
 for _ in range(40):                      # ~10s

@@ -1,13 +1,11 @@
-"""Example: author wired logic declaratively with bp_author, inject + compile,
+"""Example: author wired logic declaratively with bpkit.author, inject + compile,
 and read it back through the compactor.
 
     python ue_run.py examples/author_logic.py
 """
-import sys
-sys.path.insert(0, r"C:\Users\sugar\devel\conan")
-import bp_bridge as bp
-import bp_compact as bc
-from bp_author import Graph
+from bpkit import bridge as bp
+from bpkit import compact as bc
+from bpkit.author import Graph
 
 bp_obj, full = bp.scratch_blueprint(name="BP_AuthorDSL")
 bp_ptr, graph_ptr = bp.find_graph(full, "EventGraph")
@@ -16,7 +14,7 @@ bp_ptr, graph_ptr = bp.find_graph(full, "EventGraph")
 g = Graph()
 ev = g.event("ReceiveBeginPlay")
 pr = g.call("PrintString", "/Script/Engine.KismetSystemLibrary",
-            inputs={"InString": "authored via bp_author DSL"}, pos=(320, 0))
+            inputs={"InString": "authored via bpkit.author DSL"}, pos=(320, 0))
 g.wire(ev, "then", pr, "execute")
 
 text = g.render()

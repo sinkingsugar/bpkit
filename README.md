@@ -1,96 +1,85 @@
-# conan-bp-tools
+# bpkit
 
-External Python tooling to drive **Conan Exiles Enhanced Dev Kit** (Unreal Engine 5.6,
-content-only) Blueprints from *outside* the editor — **reading and writing Blueprint node
-graphs with no editor UI, no clipboard, no window focus, and zero C++ compilation.**
+**Read, author, edit, and compile Unreal Engine 5 Blueprint node graphs from
+*outside* the editor** — no C++ compilation, no editor UI, no clipboard, no window
+focus. Built for **content-only kits** (a packaged editor with no C++ toolchain),
+where Blueprint graph editing isn't otherwise reachable by automation.
 
-The content-only Dev Kit doesn't reflect graph editing to the `unreal` Python API (you can't
-spawn/wire K2 nodes, or even read a graph). But the C++ copy/paste entrypoints *are* exported
-from the editor's already-loaded DLLs — so in-process Python resolves them by address and calls
-them via `ctypes`. The engine's own compiler is the validator.
+Blueprints are a visual language meant for a human clicking in the editor; bpkit
+treats the graph as **data** so scripts (or an LLM) can manipulate it at scale. It
+ships authored node-text into the editor over the Python remote-execution channel
+and pastes it via the editor's own exported C++ functions (`ctypes`, in-process);
+the engine's compiler is the validator.
 
 ```
-WRITE:  authored node text → CanImportNodesFromText (safe pre-check) → ImportNodesFromText
-        → MarkBlueprintAsStructurallyModified → compile_blueprint → save_asset
-READ:   GetAllGraphs → UEdGraph::Nodes (direct read) → ExportNodesToText (per node) → node text
+WRITE: authored node text -> CanImportNodesFromText -> ImportNodesFromText
+       -> MarkBlueprintAsStructurallyModified -> compile_blueprint -> save_asset
+READ:  GetAllGraphs -> UEdGraph::Nodes -> ExportNodesToText (per node) -> node text
 ```
 
-Verified by reading an entire production blueprint (19 graphs, 942 nodes, ~2.8 MB of node text)
-and by injecting + compiling nodes, with the editor staying stable.
+Verified live on UE 5.6.1 (Conan Exiles Enhanced Dev Kit): reads a full production
+blueprint (19 graphs, ~950 nodes, 2.8 MB) and authors/compiles new logic, editor stable.
 
-`GetObjectsWithOuter` was the original node-enumeration path but is now only a fallback: it also
-surfaces orphaned nodes left in the transaction (undo) buffer, so the direct `UEdGraph::Nodes`
-read is authoritative.
+## Engine-agnostic
 
-## How it connects
+The `bpkit` core is generic. Install-specific paths live only in
+[`bpkit/config.py`](bpkit/config.py) and are overridable via `BPKIT_*` environment
+variables (engine root, bundled Python, plugin path, remote-exec endpoints). Point
+them at any UE project to reuse the toolchain. The Conan Exiles "mounted followers"
+work is one **application** of the framework, in [`mods/`](mods/).
 
-The editor ships Epic's `PythonScriptPlugin` **compiled**, with Remote Execution available
-(Project Settings → Plugins → Python → *Enable Remote Execution*). A client run with the editor's
-**bundled** interpreter talks to it over `remote_execution` (multicast `239.0.0.1:6766`, command
-`127.0.0.1:6776`). Code shipped this way runs **inside** the editor process — same address space
-as the engine DLLs, which is what makes the `ctypes` bridge possible.
+## Quick start
+
+```powershell
+# the editor's BUNDLED python (bare `python` hits the disabled Windows Store alias)
+$py = 'C:\Program Files\Epic Games\CEUE5Devkit\Engine\Binaries\ThirdParty\Python3\Win64\python.exe'
+
+& $py examples\smoketest.py                       # is the remote-exec channel up?
+& $py ue_run.py examples\inject_and_compile.py    # author a node -> compile -> save
+& $py ue_run.py examples\author_logic.py          # author wired logic from intent
+& $py ue_run.py examples\edit_graph.py            # in-place edit (read->IR->rewire->replace)
+& $py ue_run.py tests\test_bp_authoring.py        # deterministic regression suite
+& $py ue_run.py bpkit\ops\deploy.py mounted-followers   # build+deploy a whole mod (Play stopped)
+```
+
+Editor prerequisite: *Project Settings → Plugins → Python → Enable Remote
+Execution* (on). `ue_run.py` ships a local payload's source into the running editor
+and injects the repo root onto its `sys.path`, so payloads just `import bpkit`.
 
 ## Layout
 
-| path | role |
+| path | what |
 |---|---|
-| `bp_bridge.py` | **the library** — proc resolution, FString/TSet/TArray marshalling, read/write/compile. Public API: `read_blueprint`, `inject`, `can_import`, `import_nodes`, `export_nodes`, `find_object/find_graph`, `scratch_blueprint`. Runs inside the editor. |
-| `bp_ir.py` | unified Graph IR — parse exported node text → edit (`wire`/`unwire`/`remove`) → render back to import text. Pure stdlib, runs in-editor or offline. |
-| `bp_author.py` | declarative authoring DSL: build a graph from intent (`event`/`call`/`branch`/`wire`) → import text. Pure stdlib. |
-| `bp_compact.py` | compress exported node text into a dense, navigable outline (~23x smaller). Pure stdlib, runs offline on a dump. `--summary` / `--graph NAME` / `--node NAME` / `--split`. |
-| `ue_run.py` | driver: ships a local `.py` into the running editor over `remote_execution` and echoes its output |
-| `pe_exports.py` | dependency-free PE export-table dumper (find the decorated symbol names to resolve) |
-| `examples/read_blueprint.py` | read every graph of a blueprint to node text |
-| `examples/inject_and_compile.py` | inject a node, compile, save |
-| `examples/author_logic.py` | author wired logic from intent (`bp_author`) → inject → compile |
-| `examples/edit_graph.py` | parse a real graph into the IR (`bp_ir`), edit, render back, inject |
-| `examples/smoketest.py` | remote-execution connectivity check |
-| `dev/` | the reverse-engineering / journey scripts (provenance; target the old API — see `dev/README.md`) |
+| `bpkit/` | the framework: `bridge` (ctypes engine), `ir` (Graph IR), `author` (DSL), `compact` (navigation), `pe` (symbol dumper), `config` |
+| `bpkit/ops/` | reusable operational tools: editor ping, native-bridge self-test, PIE control, modal rescue, scratch cleanup, log tail, compile-error scan, **mod deploy** |
+| `ue_run.py` | host-side driver: ship a `.py` into the running editor, echo its output |
+| `examples/` | minimal framework examples (read / inject / author / edit) |
+| `tests/` | deterministic in-editor regression suite for the authoring toolchain |
+| `mods/mounted-followers/` | the Conan mod as a reproducible recipe: `manifest.py` (deploy plan) + ordered build steps + its feasibility doc |
+| `docs/` | the knowledge base (below) |
 
-## Usage
+## Docs
 
-```powershell
-# run any in-editor payload via the editor's bundled interpreter
-$py = 'C:\Program Files\Epic Games\CEUE5Devkit\Engine\Binaries\ThirdParty\Python3\Win64\python.exe'
-& $py ue_run.py examples\read_blueprint.py
-& $py ue_run.py examples\inject_and_compile.py
-```
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — the design: what the stock API
+  can't do, why the ctypes bridge, why no MCP/plugin/transpiler, the layers.
+- [docs/INTERNALS.md](docs/INTERNALS.md) — the bridge in depth: symbol resolution,
+  FString/TArray/TSet marshalling, the by-value `~TSet` crash + fix, read/write/edit
+  flows, the typed-pin orphan trap and other authoring gotchas.
+- [docs/CONAN-NOTES.md](docs/CONAN-NOTES.md) — live-verified Conan facts (mount
+  gating, follower caps, the ModController hook, MP/replication).
+- [docs/JOURNEY.md](docs/JOURNEY.md) — how the bridge and the mod were
+  reverse-engineered (provenance).
 
-Payloads that use the library insert the repo root on `sys.path` and `import bp_bridge`
-(see the examples) — `MODE_EXEC_FILE` ships the file source verbatim, so the import path
-must be set inside the payload.
+## Status
 
-## Key gotcha (why this took care to get right)
-
-`ExportNodesToText` takes its `TSet` **by value** and runs `~TSet` on return, which
-`FMemory::Free`s the set's internal buffers. A hand-built set whose memory is ctypes-allocated
-makes UE free pointers it never `malloc`'d → heap corruption + a *delayed* crash. The set's
-element buffer must be allocated with the engine's exported `FMemory::Malloc`. See the comments
-in `bp_bridge.py` (the header note and `_make_set1_fmemory`).
-
-## Navigating a blueprint
-
-```powershell
-# 1. dump the blueprint's node text from the editor (gitignored output)
-& $py ue_run.py examples\read_blueprint.py
-# 2. navigate offline at ~23x compression
-& $py bp_compact.py dump_BP_BatDemonGlider.txt --summary           # graph map + entry points
-& $py bp_compact.py dump_BP_BatDemonGlider.txt --graph LerpCamRotation
-```
-
-The compact view is lossy-for-navigation; for the exact text of one node (e.g. to author
-a variant) re-export just that node losslessly with `bp_bridge.export_nodes([node_ptr])`.
-
-## Status / roadmap
-
-- ✅ Write (inject + compile + save) — safe, verified
-- ✅ Read (any graph → canonical node text) — safe, verified
-- ✅ Blueprint-text compactor + navigator (`bp_compact.py`, ~23x)
-- ✅ Author / edit wired-logic nodes (`bp_author.py` intent DSL, `bp_ir.py` parse→edit→render),
-  inject, let `compile_blueprint` validate (see `examples/author_logic.py`, `examples/edit_graph.py`)
-- ⬜ Discover canonical text for the full set of real logic-node patterns and parameterize them
+- ✅ Read any graph → canonical node text (safe, verified)
+- ✅ Write: author/edit → paste → compile → save (safe, verified)
+- ✅ Navigable compaction of node text (~23×) for token-cheap reasoning
+- ✅ Declarative + IR authoring with typed pins, arrays, ForEach
+- ✅ Reference mod (mounted followers) reproducible end-to-end, SP + MP
 
 ## Notes
 
-This drives a managed Epic install; the engine/kit is **not** part of this repo. Nothing derived
-from the kit's `/Game` assets is committed (see `.gitignore`) — that content is Funcom's.
+This drives a managed Epic install; the engine/kit is **not** part of this repo.
+Nothing derived from the kit's `/Game` assets is committed (see `.gitignore`) —
+that content is Funcom's.
