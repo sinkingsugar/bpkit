@@ -23,11 +23,14 @@ replicates) plus a non-gated client-side cosmetic loop.
 
 ## Deploy (one command)
 
-With **Play stopped**, build the whole mod from its [`manifest.py`](manifest.py)
-(runs `01_recipe` → `02_manager` in order, imports any source assets, reports):
+**In Claude Code:** `/deploy mounted-followers` — builds the whole mod from its
+[`manifest.py`](manifest.py) (runs `01_recipe` → `02_manager` in order, imports any
+source assets, verifies). Run with **Play stopped**.
+
+Equivalent manual command:
 
 ```powershell
-& $py ue_run.py bpkit/ops/deploy.py mounted-followers     # or the /deploy mounted-followers skill
+& $py ue_run.py bpkit/ops/deploy.py mounted-followers
 ```
 
 ## Build sequence (step by step)

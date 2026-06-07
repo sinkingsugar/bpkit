@@ -6,7 +6,8 @@ focus. Built for **content-only kits** (a packaged editor with no C++ toolchain)
 where Blueprint graph editing isn't otherwise reachable by automation.
 
 Blueprints are a visual language meant for a human clicking in the editor; bpkit
-treats the graph as **data** so scripts (or an LLM) can manipulate it at scale. It
+treats the graph as **data** so an agent (it's built for **Claude Code**) — or a
+plain script — can manipulate it at scale. It
 ships authored node-text into the editor over the Python remote-execution channel
 and pastes it via the editor's own exported C++ functions (`ctypes`, in-process);
 the engine's compiler is the validator.
@@ -28,13 +29,47 @@ variables (engine root, bundled Python, plugin path, remote-exec endpoints). Poi
 them at any UE project to reuse the toolchain. The Conan Exiles "mounted followers"
 work is one **application** of the framework, in [`mods/`](mods/).
 
-## Quick start
+## Quick start — with Claude Code (the intended way)
+
+bpkit is built to be driven by **[Claude Code](https://claude.com/claude-code)**.
+The repo ships its own slash-commands in [`.claude/skills/`](.claude/skills/), plus a
+`bpkit` skill that **auto-loads** — so you can just *describe* a Blueprint task in
+plain language and have Claude drive the editor for you, no Python required.
+
+> **Editor prerequisite (any path):** launch the Dev Kit editor, then
+> *Project Settings → Plugins → Python → Enable Remote Execution*.
+
+1. **Open this repo in Claude Code.**
+2. **`/setup`** — adaptive health check: verifies the remote-exec channel *and* that
+   the native ctypes bridge resolves on *your* editor build. It self-heals symbol
+   drift instead of hard-failing.
+3. Then **just ask** — *"read BP_BatDemonGlider"*, *"author a ModController that
+   raises the Mount cap"*, *"why does this graph fail to compile?"* — the `bpkit`
+   skill carries the standing rules and Claude does the work. Or use the explicit
+   commands:
+
+   | command | does |
+   |---|---|
+   | `/bp-read <asset>` | dump a blueprint's graphs as a dense, navigable outline |
+   | `/deploy <mod>` | build & deploy a whole mod from its `manifest.py` (Play stopped) |
+   | `/bp-test` | run the offline + in-editor test suites |
+   | `/bp-channel` | quick "is the editor channel live?" check |
+
+4. **`/install`** (once) — copies these commands into `~/.claude/skills/` so they
+   work from any project directory, not just this repo.
+
+<details>
+<summary><b>Or drive it yourself, no Claude Code</b> — the manual / scripting path</summary>
+
+Every skill is a thin wrapper over a plain Python entrypoint you can run directly
+with the editor's **bundled** interpreter (bare `python` hits the disabled Windows
+Store alias):
 
 ```powershell
-# the editor's BUNDLED python (bare `python` hits the disabled Windows Store alias)
 $py = 'C:\Program Files\Epic Games\CEUE5Devkit\Engine\Binaries\ThirdParty\Python3\Win64\python.exe'
 
-& $py examples\smoketest.py                       # is the remote-exec channel up?
+& $py ue_run.py bpkit\ops\ping.py                 # is the remote-exec channel up?
+& $py ue_run.py bpkit\ops\selftest.py             # does the native ctypes bridge resolve?
 & $py ue_run.py examples\inject_and_compile.py    # author a node -> compile -> save
 & $py ue_run.py examples\author_logic.py          # author wired logic from intent
 & $py ue_run.py examples\edit_graph.py            # in-place edit (read->IR->rewire->replace)
@@ -42,14 +77,16 @@ $py = 'C:\Program Files\Epic Games\CEUE5Devkit\Engine\Binaries\ThirdParty\Python
 & $py ue_run.py bpkit\ops\deploy.py mounted-followers   # build+deploy a whole mod (Play stopped)
 ```
 
-Editor prerequisite: *Project Settings → Plugins → Python → Enable Remote
-Execution* (on). `ue_run.py` ships a local payload's source into the running editor
-and injects the repo root onto its `sys.path`, so payloads just `import bpkit`.
+`ue_run.py` ships a local payload's source into the running editor and injects the
+repo root onto its `sys.path`, so payloads just `import bpkit`. The offline library
+tests need no editor: `& $py tests\test_offline.py`.
+</details>
 
 ## Layout
 
 | path | what |
 |---|---|
+| `.claude/skills/` | the **Claude Code entry point**: `/setup`, `/install`, `/bp-read`, `/deploy`, `/bp-test`, `/bp-channel`, + the auto-loading `bpkit` skill |
 | `bpkit/` | the framework: `bridge` (ctypes engine), `ir` (Graph IR), `author` (DSL), `compact` (navigation), `pe` (symbol dumper), `config` |
 | `bpkit/ops/` | reusable operational tools: editor ping, native-bridge self-test, PIE control, modal rescue, scratch cleanup, log tail, compile-error scan, **mod deploy** |
 | `ue_run.py` | host-side driver: ship a `.py` into the running editor, echo its output |
