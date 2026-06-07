@@ -21,9 +21,18 @@ on dismount. Each follower gets its own horse; follower caps are raised per grou
 MP works because the manager is `always_relevant` and uses **actor-attach** (which
 replicates) plus a non-gated client-side cosmetic loop.
 
-## Build sequence
+## Deploy (one command)
 
-Run with **Play stopped**, via the editor's bundled Python (see the
+With **Play stopped**, build the whole mod from its [`manifest.py`](manifest.py)
+(runs `01_recipe` → `02_manager` in order, imports any source assets, reports):
+
+```powershell
+& $py ue_run.py bpkit/ops/deploy.py mounted-followers     # or the /deploy mounted-followers skill
+```
+
+## Build sequence (step by step)
+
+The same steps run individually, via the editor's bundled Python (see the
 [root README](../../README.md) for `$py`):
 
 ```powershell

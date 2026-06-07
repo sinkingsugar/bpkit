@@ -39,6 +39,7 @@ $py = 'C:\Program Files\Epic Games\CEUE5Devkit\Engine\Binaries\ThirdParty\Python
 & $py ue_run.py examples\author_logic.py          # author wired logic from intent
 & $py ue_run.py examples\edit_graph.py            # in-place edit (read->IR->rewire->replace)
 & $py ue_run.py tests\test_bp_authoring.py        # deterministic regression suite
+& $py ue_run.py bpkit\ops\deploy.py mounted-followers   # build+deploy a whole mod (Play stopped)
 ```
 
 Editor prerequisite: *Project Settings → Plugins → Python → Enable Remote
@@ -50,12 +51,11 @@ and injects the repo root onto its `sys.path`, so payloads just `import bpkit`.
 | path | what |
 |---|---|
 | `bpkit/` | the framework: `bridge` (ctypes engine), `ir` (Graph IR), `author` (DSL), `compact` (navigation), `pe` (symbol dumper), `config` |
-| `bpkit/ops/` | reusable operational tools: editor ping, PIE control, modal rescue, scratch cleanup, log tail, compile-error scan |
-| `bp_bridge.py`, `bp_ir.py`, … | thin **compatibility shims** re-exporting `bpkit.*` (so old `import bp_bridge` payloads keep working) |
+| `bpkit/ops/` | reusable operational tools: editor ping, native-bridge self-test, PIE control, modal rescue, scratch cleanup, log tail, compile-error scan, **mod deploy** |
 | `ue_run.py` | host-side driver: ship a `.py` into the running editor, echo its output |
 | `examples/` | minimal framework examples (read / inject / author / edit) |
 | `tests/` | deterministic in-editor regression suite for the authoring toolchain |
-| `mods/mounted-followers/` | the Conan mod as a reproducible recipe (+ its feasibility doc) |
+| `mods/mounted-followers/` | the Conan mod as a reproducible recipe: `manifest.py` (deploy plan) + ordered build steps + its feasibility doc |
 | `docs/` | the knowledge base (below) |
 
 ## Docs

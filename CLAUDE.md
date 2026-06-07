@@ -43,9 +43,10 @@ and `docs/` for depth; this file is the operational quick-reference.
 - A Slate modal freezes the channel → rescue from a host process: `& $py bpkit/ops/dismiss_modal.py enter`.
 
 ## Where things live
-- **Framework:** `bpkit/` (`bridge`/`ir`/`author`/`compact`/`pe`/`config`) + `bpkit/ops/` (ping, pie, modal,
-  cleanup, log tail, compile-errors). Root `bp_*.py` / `pe_exports.py` are backward-compat shims.
-- **Examples:** `examples/`. **Regression suite:** `tests/` (run with Play stopped). **The mod:** `mods/mounted-followers/`.
+- **Framework:** `bpkit/` (`bridge`/`ir`/`author`/`compact`/`pe`/`config`) + `bpkit/ops/` (ping, selftest, pie,
+  modal, cleanup, log tail, compile-errors, **deploy**). All code uses `from bpkit import ...` (no root shims).
+- **Examples:** `examples/`. **Regression suite:** `tests/` (run with Play stopped). **Mods:** `mods/<name>/`
+  each with a `manifest.py` (deploy plan) + ordered build steps; deploy with `bpkit/ops/deploy.py <name>` (`/deploy`).
 - **Knowledge base — read these instead of re-deriving:**
   - `docs/ARCHITECTURE.md` — design; what the stock API can't do; why ctypes; no MCP/plugin/transpiler.
   - `docs/INTERNALS.md` — bridge internals: symbol resolution, FString/TArray/TSet, the by-value `~TSet`
