@@ -27,18 +27,25 @@ authored **fully programmatically** (no manual struct editor) via the ctypes bri
 ## Status
 - ✅ Offline VM — `test_offline.py`, **16/16** (the oracle: `5.0 DUP * → 25.0`, vec add, scalar×vec).
 - ✅ `ST_FCell` built fully programmatically — `00_create_fcell.py` (7 distinct-typed members, saved).
-- ✅ In-editor mechanics — `test_vm.py`, **7/7**: typed cell Make/Break round-trip, and typed
-  stack push / read-back / length (the atomic ops the dispatch composes).
-- ⏳ Remaining: the `Switch`-on-int dispatch with polymorphic `+ - *`, the rest of the opcodes
-  (pop/dup/swap/print/mk_vec…), and integration running a compiled program end-to-end
-  (Python-driven `Step`). All authoring unknowns (struct authoring, typed cells, typed
-  struct-array ops, pin names) are resolved — this is sizeable but de-risked graph-gen.
+- ✅ In-editor mechanics — `test_vm.py`, **7/7**: typed cell Make/Break round-trip, typed stack
+  push / read-back / length (the atomic ops the dispatch composes).
+- ✅ **VM executes bytecode** — `build_vm.py` generates `BP_ForthVM` (a one-instruction `Step`:
+  IP fetch → **Branch-chain dispatch** → stack ops) and runs programs via Python-driven Step,
+  matching the oracle: `5.0 .` → `5.0` (3 steps) and `5.0 dup * .` → `25.0` (5 steps).
+  Opcodes live: `LIT_FLOAT`, `DUP`, `MUL` (float), `PRINT`, `HALT`. 0 orphans, 0 errors, 82 nodes.
+- ⏳ Remaining: **polymorphic** `+ - *` (tag-branch for vec / int→float promotion) + `MK_VEC` /
+  `LIT_INT` to run the vector oracle cases (vec add, scalar×vec), then `CALL`/`EXIT` for colon
+  defs. The dispatch + arithmetic pattern is proven — this is more handlers, not new unknowns.
+
+> Dispatch is a Branch chain (`Equal_IntInt` + `IfThenElse` per opcode), not `SwitchInteger`:
+> a switch's per-case pins can't be authored via paste (reconstruction drops them).
 
 ## Run (Play stopped, bundled `$py` — see the [root README](../../README.md))
 ```powershell
 & $py ue_run.py mods/forthvm/00_create_fcell.py   # build ST_FCell (once per fresh editor session)
 & $py mods/forthvm/test_offline.py                # offline VM spec (no editor)
 & $py ue_run.py mods/forthvm/test_vm.py           # in-editor mechanics
+& $py ue_run.py mods/forthvm/build_vm.py          # generate BP_ForthVM + run programs (5.0 .→5.0, 5.0 dup *.→25.0)
 ```
 
 ## Files
@@ -49,5 +56,6 @@ authored **fully programmatically** (no manual struct editor) via the ctypes bri
 | `vm_ref.py` | Python reference interpreter — the oracle the Blueprint must match |
 | `config.py` | FCell layout + asset names / package |
 | `00_create_fcell.py` | builds the `ST_FCell` struct programmatically (idempotent per session) |
+| `build_vm.py` | **generates `BP_ForthVM`** (the interpreter) + runs bytecode programs and asserts vs the oracle |
 | `test_offline.py` | offline VM spec (no editor) |
 | `test_vm.py` | in-editor mechanics (spawn+call+assert) |
