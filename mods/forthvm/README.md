@@ -29,13 +29,19 @@ authored **fully programmatically** (no manual struct editor) via the ctypes bri
 - ✅ `ST_FCell` built fully programmatically — `00_create_fcell.py` (7 distinct-typed members, saved).
 - ✅ In-editor mechanics — `test_vm.py`, **7/7**: typed cell Make/Break round-trip, typed stack
   push / read-back / length (the atomic ops the dispatch composes).
-- ✅ **VM executes bytecode** — `build_vm.py` generates `BP_ForthVM` (a one-instruction `Step`:
-  IP fetch → **Branch-chain dispatch** → stack ops) and runs programs via Python-driven Step,
-  matching the oracle: `5.0 .` → `5.0` (3 steps) and `5.0 dup * .` → `25.0` (5 steps).
-  Opcodes live: `LIT_FLOAT`, `DUP`, `MUL` (float), `PRINT`, `HALT`. 0 orphans, 0 errors, 82 nodes.
-- ⏳ Remaining: **polymorphic** `+ - *` (tag-branch for vec / int→float promotion) + `MK_VEC` /
-  `LIT_INT` to run the vector oracle cases (vec add, scalar×vec), then `CALL`/`EXIT` for colon
-  defs. The dispatch + arithmetic pattern is proven — this is more handlers, not new unknowns.
+- ✅ **VM executes bytecode (floats + vectors)** — `build_vm.py` generates `BP_ForthVM` (a
+  one-instruction `Step`: IP fetch → **Branch-chain dispatch** → stack ops) and runs programs via
+  Python-driven Step, matching the oracle: `5.0 .` → `5.0`, `5.0 dup * .` → `25.0`, and
+  `1.0 2.0 3.0 vec3 .` → `(1,2,3)`. Opcodes live: `LIT_FLOAT`, `DUP`, `MUL` (float), `MK_VEC`,
+  `PRINT` (float+vec), `HALT`. 0 orphans, clean compile.
+- ⏳ Remaining: **polymorphic** `+ - *` (vec+vec, scalar×vec, int→float promotion) + `LIT_INT`
+  for the rest of the vector oracle cases, then `CALL`/`EXIT` for colon defs. The dispatch +
+  arithmetic + vector-construction patterns are all proven — this is more handlers, not new unknowns.
+
+> Two gotchas baked in: build `FVector` with the **`MakeVector` function**, not `MakeStruct`
+> (`MakeStruct(FVector)` injects but fails to compile — "not a BlueprintType"); and graph-level
+> compile errors don't appear on nodes — the spawn+call+assert is the real check (an inert Step
+> that hits the step cap = a silent compile failure; grep `Saved/Logs/*.log` for `[Compiler]`).
 
 > Dispatch is a Branch chain (`Equal_IntInt` + `IfThenElse` per opcode), not `SwitchInteger`:
 > a switch's per-case pins can't be authored via paste (reconstruction drops them).

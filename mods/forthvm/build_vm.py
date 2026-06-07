@@ -43,13 +43,24 @@ def fpin():  # resolve the cell's float member pin name live
     bp.inject(pf, 'Begin Object Class=/Script/BlueprintGraph.K2Node_MakeStruct Name="MK"\n   StructType=%s\nEnd Object\n' % STYPE, "EventGraph")
     t = bp.export_nodes(bp.graph_nodes(gp))
     EAL.delete_asset(pf.split(".")[0])
+    roles = {}
     for line in t.splitlines():
-        if 'PinName="MemberVar' in line and 'PinType.PinCategory="real"' in line:
-            return re.search(r'PinName="([^"]+)"', line).group(1)
+        if 'PinName="MemberVar' not in line:
+            continue
+        nm = re.search(r'PinName="([^"]+)"', line).group(1)
+        cm = re.search(r'PinType\.PinCategory="([^"]*)"', line); cat = cm.group(1) if cm else ""
+        sm = re.search(r"PinSubCategoryObject=[^,]*\.(\w+)'", line); sub = sm.group(1) if sm else ""
+        key = {"int": "Type", "int64": "I", "real": "F", "bool": "B"}.get(cat)
+        if cat == "struct":
+            key = {"Vector": "V", "Rotator": "R", "Transform": "X"}.get(sub)
+        if key:
+            roles[key] = nm
+    return roles
 
 
-F_PIN = fpin()
-print("F_PIN =", F_PIN)
+P = fpin()
+F_PIN = P["F"]
+print("pins:", P)
 
 # --- build BP_ForthVM --------------------------------------------------------
 path = MOD.OUTPUT_PKG + "/" + MOD.VM
@@ -61,9 +72,11 @@ obj, _ = bp.scratch_blueprint(pkg=MOD.OUTPUT_PKG, name=MOD.VM)
 fcell = unreal.load_asset(SOBJ)
 intT = BEL.get_basic_type_by_name("int"); realT = BEL.get_basic_type_by_name("real")
 boolT = BEL.get_basic_type_by_name("bool"); cellAT = BEL.get_array_type(BEL.get_struct_type(fcell))
+vecT = BEL.get_struct_type(unreal.Vector.static_struct())
 for nm, ty in (("Code", BEL.get_array_type(intT)), ("Floats", BEL.get_array_type(realT)),
-               ("Data", cellAT), ("IP", intT), ("Running", boolT), ("Out", realT),
-               ("Opcode", intT), ("Operand", intT), ("TmpAF", realT), ("TmpBF", realT)):
+               ("Data", cellAT), ("IP", intT), ("Running", boolT), ("Out", realT), ("OutV", vecT),
+               ("Opcode", intT), ("Operand", intT), ("TmpAF", realT), ("TmpBF", realT),
+               ("TmpX", realT), ("TmpY", realT), ("TmpZ", realT)):
     BEL.add_member_variable(obj, nm, ty)
     BEL.set_blueprint_variable_instance_editable(obj, nm, True)
 
@@ -127,12 +140,14 @@ def branch(cond, pos):
 bF = branch(equal(isa.LIT_FLOAT, (1200, 300)), (1400, 300))
 bD = branch(equal(isa.DUP, (1200, 1200)), (1400, 1200))
 bM = branch(equal(isa.MUL, (1200, 1500)), (1400, 1500))
+bMV = branch(equal(isa.MK_VEC, (1200, 1800)), (1400, 1800))
 bP = branch(equal(isa.PRINT, (1200, 600)), (1400, 600))
 bH = branch(equal(isa.HALT, (1200, 900)), (1400, 900))
 g.wire(setIP, "then", bF, "execute", exec=True)
 g.wire(bF, "Else", bD, "execute", exec=True)
 g.wire(bD, "Else", bM, "execute", exec=True)
-g.wire(bM, "Else", bP, "execute", exec=True)
+g.wire(bM, "Else", bMV, "execute", exec=True)
+g.wire(bMV, "Else", bP, "execute", exec=True)
 g.wire(bP, "Else", bH, "execute", exec=True)
 
 # --- handler: LIT_FLOAT --- operand = Code[IP]; IP++; push Make(Type=1,F=Floats[operand])
@@ -180,6 +195,11 @@ bkP = g.node("K2Node_BreakStruct", ["StructType=%s" % STYPE], base="BreakStruct"
 g.wire(getC, "Output", bkP, "ST_FCell", exec=False)
 setOut = g.var_set("Out", "real", pos=(2700, 650)); g.wire(bkP, F_PIN, setOut, "Out", exec=False)
 g.wire(bP, "Then", setOut, "execute", exec=True)
+# also surface the vector field (cells may hold a vec)
+bkP.pin(P["V"]).typed("struct", ir.struct_path("/Script/CoreUObject.Vector"), direction="EGPD_Output")
+setOutV = g.var_set("OutV", "struct", ir.struct_path("/Script/CoreUObject.Vector"), pos=(2700, 760))
+g.wire(bkP, P["V"], setOutV, "OutV", exec=False)
+g.wire(setOut, "then", setOutV, "execute", exec=True)
 dRp = g.var_get("Data", "struct", STYPE, pos=(2700, 820)); st(dRp, "Data", "EGPD_Output", array=True)
 rem = caf(g, "Array_Remove", (2900, 720)); st(rem, "TargetArray", "EGPD_Input", array=True)
 g.wire(dRp, "Data", rem, "TargetArray", exec=False)
@@ -189,7 +209,7 @@ lenP2 = caf(g, "Array_Length", (2600, 1050)); st(lenP2, "TargetArray", "EGPD_Inp
 g.wire(dLp2, "Data", lenP2, "TargetArray", exec=False); g.wire(lenP2, "ReturnValue", idxP2, "A", exec=False)
 g.typed_input(idxP2, "B", "1", "int")
 g.wire(idxP2, "ReturnValue", rem, "IndexToRemove", exec=False)
-g.wire(setOut, "then", rem, "execute", exec=True)
+g.wire(setOutV, "then", rem, "execute", exec=True)
 
 # --- handler: HALT --- Running=false
 setR = g.var_set("Running", "bool", pos=(1700, 900)); setR.pin("Running").typed("bool", direction="EGPD_Input").literal("false")
@@ -256,6 +276,28 @@ g.wire(bM, "Then", setTB, "execute", exec=True)
 g.wire(remB, "then", setTA, "execute", exec=True)
 g.wire(remA, "then", addM, "execute", exec=True)
 
+# --- handler: MK_VEC --- ( x y z -- vec ): pop z,y,x ; V=(x,y,z) ; push Type=Vec cell
+VEC_STYPE = '"%s"' % ir.struct_path("/Script/CoreUObject.Vector")
+setZ, remZ = pop_float_into("TmpZ", 2450)
+setY, remY = pop_float_into("TmpY", 2900)
+setX, remX = pop_float_into("TmpX", 3350)
+xG = g.var_get("TmpX", "real", pos=(3650, 2400)); yG = g.var_get("TmpY", "real", pos=(3650, 2480)); zG = g.var_get("TmpZ", "real", pos=(3650, 2560))
+# MakeStruct(FVector) does NOT compile ("Make Vector is not a BlueprintType");
+# use the KismetMathLibrary MakeVector function instead.
+mkVec = g.call("MakeVector", KMATH, pos=(3850, 2480))
+g.wire(xG, "TmpX", mkVec, "X", exec=False); g.wire(yG, "TmpY", mkVec, "Y", exec=False); g.wire(zG, "TmpZ", mkVec, "Z", exec=False)
+mkCV = g.node("K2Node_MakeStruct", ["StructType=%s" % STYPE], base="MakeStruct", pos=(4050, 2480))
+g.typed_input(mkCV, P["Type"], "3", "int")
+mkCV.pin(P["V"]).typed("struct", ir.struct_path("/Script/CoreUObject.Vector"), direction="EGPD_Input")
+g.wire(mkVec, "ReturnValue", mkCV, P["V"], exec=False)
+dPushV = g.var_get("Data", "struct", STYPE, pos=(4050, 2620)); st(dPushV, "Data", "EGPD_Output", array=True)
+addV = caf(g, "Array_Add", (4250, 2480)); st(addV, "TargetArray", "EGPD_Input", array=True); st(addV, "NewItem", "EGPD_Input")
+g.wire(dPushV, "Data", addV, "TargetArray", exec=False); g.wire(mkCV, "ST_FCell", addV, "NewItem", exec=False)
+g.wire(bMV, "Then", setZ, "execute", exec=True)
+g.wire(remZ, "then", setY, "execute", exec=True)
+g.wire(remY, "then", setX, "execute", exec=True)
+g.wire(remX, "then", addV, "execute", exec=True)
+
 # inject + validate
 bp_ptr, gp = bp.find_graph(objpath, "EventGraph"); bp.clear_graph(bp_ptr, gp)
 print("inject ->", bp.inject(objpath, g.render(), graph_name="EventGraph"))
@@ -265,6 +307,10 @@ errs = [b for b in re.split(r"(?=Begin Object Class=)", txt)
         if "ErrorMsg" in b and 'ErrorMsg=""' not in b and "Override pins have been removed" not in b]
 print("orphans:", len(orph), orph[:10])
 print("errors:", [re.search(r'ErrorMsg="([^"]*)"', e).group(1)[:70] for e in errs])
+# NOTE: graph-level compile errors (e.g. "Make Vector is not a BlueprintType") do NOT
+# appear on nodes -- the spawn+call+assert below is the real verification (an inert
+# Step that hits the step cap = a silent compile failure). For deep debugging, grep
+# <project>/Saved/Logs/*.log for "[Compiler]".
 EAL.save_asset(path)
 
 # --- run: program `5.0 .`  ->  [LIT_FLOAT,0, PRINT, HALT], Floats=[5.0] ----
@@ -289,6 +335,18 @@ while inst.get_editor_property("Running") and s2 < 50:
     inst.call_method("Step"); s2 += 1
 out2 = inst.get_editor_property("Out")
 print("RESULT  (5.0 dup * .)  steps=%d Out=%s -> %s" % (s2, out2, "PASS 25.0" if abs(out2 - 25.0) < 1e-6 else "FAIL"))
+
+# program 3: `1.0 2.0 3.0 vec3 .` -> OutV (1,2,3)
+inst.set_editor_property("Data", [])
+inst.set_editor_property("Code", [isa.LIT_FLOAT, 0, isa.LIT_FLOAT, 1, isa.LIT_FLOAT, 2, isa.MK_VEC, isa.PRINT, isa.HALT])
+inst.set_editor_property("Floats", [1.0, 2.0, 3.0])
+inst.set_editor_property("IP", 0); inst.set_editor_property("Running", True)
+s3 = 0
+while inst.get_editor_property("Running") and s3 < 50:
+    inst.call_method("Step"); s3 += 1
+v = inst.get_editor_property("OutV")
+okv = abs(v.x - 1.0) < 1e-6 and abs(v.y - 2.0) < 1e-6 and abs(v.z - 3.0) < 1e-6
+print("RESULT  (1 2 3 vec3 .) steps=%d OutV=%s -> %s" % (s3, v, "PASS (1,2,3)" if okv else "FAIL"))
 EAS.destroy_actor(inst)
 if EAL.does_directory_exist("/Game/_Scratch/_vmgen"):
     EAL.delete_directory("/Game/_Scratch/_vmgen")
