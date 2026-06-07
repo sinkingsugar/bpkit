@@ -6,9 +6,11 @@ chain (SwitchInteger case pins can't be authored via paste). Pure-node ordering
 matters: the opcode and inline operands are CAPTURED into member vars BEFORE IP is
 advanced, so the branch tests and operand reads see the right cells.
 
-THIS BUILD = the minimal slice (LIT_FLOAT / PRINT / HALT) running `5.0 .` -> Out 5.0,
-proving the whole pipeline. DUP/MUL/ADD/MK_VEC are added as more handlers (burst 4).
-Run with Play stopped, after 00_create_fcell.py.
+Opcodes live: LIT_FLOAT, DUP, MUL (float), MK_VEC, SQRT (engine-call game word), PRINT,
+HALT. Produced cells are Type-tagged (CT_FLOAT/CT_VEC) so the dispatch can branch on type.
+Run with Play stopped, after 00_create_fcell.py. Deferred (when a runtime-scripting mod
+needs it -- e.g. GM live-quests on a persistent server): polymorphic + - *, LIT_INT,
+CALL/EXIT, integer error codes, more game words, the in-game RunSteps(budget) Tick driver.
 
     & $py ue_run.py mods/forthvm/build_vm.py
 """
@@ -66,15 +68,16 @@ print("pins:", P)
 path = MOD.OUTPUT_PKG + "/" + MOD.VM
 objpath = path + "." + MOD.VM
 # reuse-or-create (NEVER delete+recreate -- that leaves the old BP pinned in the undo
-# buffer and the recompiled class comes back stale; clear_graph + re-inject is clean
-# and re-runnable in-session). add_member_variable no-ops on existing vars.
+# buffer and the recompiled class comes back stale; clear_graph + re-inject is clean).
+# A fresh editor session builds clean; repeated in-session rebuilds degrade a reused BP.
 obj, _ = bp.scratch_blueprint(pkg=MOD.OUTPUT_PKG, name=MOD.VM)
 fcell = unreal.load_asset(SOBJ)
 intT = BEL.get_basic_type_by_name("int"); realT = BEL.get_basic_type_by_name("real")
 boolT = BEL.get_basic_type_by_name("bool"); cellAT = BEL.get_array_type(BEL.get_struct_type(fcell))
 vecT = BEL.get_struct_type(unreal.Vector.static_struct())
 for nm, ty in (("Code", BEL.get_array_type(intT)), ("Floats", BEL.get_array_type(realT)),
-               ("Data", cellAT), ("IP", intT), ("Running", boolT), ("Out", realT), ("OutV", vecT),
+               ("Data", cellAT), ("IP", intT), ("Running", boolT),
+               ("Out", realT), ("OutV", vecT), ("OutType", intT),
                ("Opcode", intT), ("Operand", intT), ("TmpAF", realT), ("TmpBF", realT),
                ("TmpX", realT), ("TmpY", realT), ("TmpZ", realT)):
     BEL.add_member_variable(obj, nm, ty)
@@ -175,7 +178,7 @@ getF.pin("Output").typed("real", direction="EGPD_Output")
 g.wire(flG, "Floats", getF, "Array", exec=False)
 g.wire(opndG, "Operand", getF, "Dimension 1", exec=False)
 mk = g.node("K2Node_MakeStruct", ["StructType=%s" % STYPE], base="MakeStruct", pos=(3100, 300))
-# wire f -> Make.F (minimal test reads F via Break; Type tag set later in burst 4)
+g.typed_input(mk, P["Type"], str(isa.CT_FLOAT), "int")   # tag the cell (semantic once + - * branch on it)
 mk.pin(F_PIN).typed("real", direction="EGPD_Input")
 g.wire(getF, "Output", mk, F_PIN, exec=False)
 dataPush = g.var_get("Data", "struct", STYPE, pos=(3100, 500)); st(dataPush, "Data", "EGPD_Output", array=True)
@@ -197,11 +200,14 @@ bkP = g.node("K2Node_BreakStruct", ["StructType=%s" % STYPE], base="BreakStruct"
 g.wire(getC, "Output", bkP, "ST_FCell", exec=False)
 setOut = g.var_set("Out", "real", pos=(2700, 650)); g.wire(bkP, F_PIN, setOut, "Out", exec=False)
 g.wire(bP, "Then", setOut, "execute", exec=True)
-# also surface the vector field (cells may hold a vec)
+# surface the vector field + the type tag (PRINT reports the cell's type)
 bkP.pin(P["V"]).typed("struct", ir.struct_path("/Script/CoreUObject.Vector"), direction="EGPD_Output")
 setOutV = g.var_set("OutV", "struct", ir.struct_path("/Script/CoreUObject.Vector"), pos=(2700, 760))
 g.wire(bkP, P["V"], setOutV, "OutV", exec=False)
 g.wire(setOut, "then", setOutV, "execute", exec=True)
+bkP.pin(P["Type"]).typed("int", direction="EGPD_Output")
+setOutT = g.var_set("OutType", "int", pos=(2700, 870)); g.wire(bkP, P["Type"], setOutT, "OutType", exec=False)
+g.wire(setOutV, "then", setOutT, "execute", exec=True)
 dRp = g.var_get("Data", "struct", STYPE, pos=(2700, 820)); st(dRp, "Data", "EGPD_Output", array=True)
 rem = caf(g, "Array_Remove", (2900, 720)); st(rem, "TargetArray", "EGPD_Input", array=True)
 g.wire(dRp, "Data", rem, "TargetArray", exec=False)
@@ -211,7 +217,7 @@ lenP2 = caf(g, "Array_Length", (2600, 1050)); st(lenP2, "TargetArray", "EGPD_Inp
 g.wire(dLp2, "Data", lenP2, "TargetArray", exec=False); g.wire(lenP2, "ReturnValue", idxP2, "A", exec=False)
 g.typed_input(idxP2, "B", "1", "int")
 g.wire(idxP2, "ReturnValue", rem, "IndexToRemove", exec=False)
-g.wire(setOutV, "then", rem, "execute", exec=True)
+g.wire(setOutT, "then", rem, "execute", exec=True)
 
 # --- handler: HALT --- Running=false
 setR = g.var_set("Running", "bool", pos=(1700, 900)); setR.pin("Running").typed("bool", direction="EGPD_Input").literal("false")
@@ -269,6 +275,7 @@ afG = g.var_get("TmpAF", "real", pos=(3050, 1700)); bfG = g.var_get("TmpBF", "re
 prod = g.call("Multiply_DoubleDouble", KMATH, pos=(3250, 1740))
 g.wire(afG, "TmpAF", prod, "A", exec=False); g.wire(bfG, "TmpBF", prod, "B", exec=False)
 mkM = g.node("K2Node_MakeStruct", ["StructType=%s" % STYPE], base="MakeStruct", pos=(3450, 1740))
+g.typed_input(mkM, P["Type"], str(isa.CT_FLOAT), "int")
 mkM.pin(F_PIN).typed("real", direction="EGPD_Input")
 g.wire(prod, "ReturnValue", mkM, F_PIN, exec=False)
 dPushM = g.var_get("Data", "struct", STYPE, pos=(3450, 1880)); st(dPushM, "Data", "EGPD_Output", array=True)
@@ -305,6 +312,7 @@ sqSet, sqRem = pop_float_into("TmpAF", 3800)
 sqAF = g.var_get("TmpAF", "real", pos=(4500, 3700))
 sqrt = g.call("Sqrt", KMATH, pos=(4700, 3700)); g.wire(sqAF, "TmpAF", sqrt, "A", exec=False)
 mkSq = g.node("K2Node_MakeStruct", ["StructType=%s" % STYPE], base="MakeStruct", pos=(4900, 3700))
+g.typed_input(mkSq, P["Type"], str(isa.CT_FLOAT), "int")
 mkSq.pin(F_PIN).typed("real", direction="EGPD_Input")
 g.wire(sqrt, "ReturnValue", mkSq, F_PIN, exec=False)
 dpSq = g.var_get("Data", "struct", STYPE, pos=(4900, 3840)); st(dpSq, "Data", "EGPD_Output", array=True)
@@ -359,9 +367,9 @@ inst.set_editor_property("IP", 0); inst.set_editor_property("Running", True)
 s3 = 0
 while inst.get_editor_property("Running") and s3 < 50:
     inst.call_method("Step"); s3 += 1
-v = inst.get_editor_property("OutV")
-okv = abs(v.x - 1.0) < 1e-6 and abs(v.y - 2.0) < 1e-6 and abs(v.z - 3.0) < 1e-6
-print("RESULT  (1 2 3 vec3 .) steps=%d OutV=%s -> %s" % (s3, v, "PASS (1,2,3)" if okv else "FAIL"))
+v = inst.get_editor_property("OutV"); t3 = inst.get_editor_property("OutType")
+okv = abs(v.x - 1.0) < 1e-6 and abs(v.y - 2.0) < 1e-6 and abs(v.z - 3.0) < 1e-6 and t3 == isa.CT_VEC
+print("RESULT  (1 2 3 vec3 .) steps=%d OutV=%s tag=%s -> %s" % (s3, v, t3, "PASS (1,2,3) vec-tagged" if okv else "FAIL"))
 
 # program 4: `16.0 sqrt .` -> 4.0  -- proves the VM CALLS AN ENGINE FUNCTION
 inst.set_editor_property("Data", [])
@@ -371,8 +379,9 @@ inst.set_editor_property("IP", 0); inst.set_editor_property("Out", 0.0); inst.se
 s4 = 0
 while inst.get_editor_property("Running") and s4 < 50:
     inst.call_method("Step"); s4 += 1
-o4 = inst.get_editor_property("Out")
-print("RESULT  (16.0 sqrt .)  steps=%d Out=%s -> %s" % (s4, o4, "PASS 4.0 (engine call!)" if abs(o4 - 4.0) < 1e-6 else "FAIL"))
+o4 = inst.get_editor_property("Out"); t4 = inst.get_editor_property("OutType")
+ok4 = abs(o4 - 4.0) < 1e-6 and t4 == isa.CT_FLOAT
+print("RESULT  (16.0 sqrt .)  steps=%d Out=%s tag=%s -> %s" % (s4, o4, t4, "PASS 4.0 float-tagged (engine call!)" if ok4 else "FAIL"))
 EAS.destroy_actor(inst)
 if EAL.does_directory_exist("/Game/_Scratch/_vmgen"):
     EAL.delete_directory("/Game/_Scratch/_vmgen")
