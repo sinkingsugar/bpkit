@@ -102,6 +102,15 @@ Attach + freeze + pose, all content-only and scriptable from Blueprint:
   `SnapToTarget` snaps to the capsule center → rider floats ~96u up). Run Stow
   **once** per mount — re-running while stowed re-saves the (attached, ~zero)
   transform and corrupts the restore.
+- **Never call `SetAnimationMode(AnimationBlueprint)` with force-init each tick.** The
+  client-side un-seat loop runs over *every* `ConanCharacter` every frame; the reset
+  branch flips non-seated ones back to `AnimationBlueprint`. `SetAnimationMode`'s
+  `bForceInitAnimScriptInstance` defaults **true**, which **re-inits the AnimBP even
+  when the mode is unchanged** → it reinitialized *every* character's AnimBP every
+  frame and broke all animations (player + thralls + NPCs). Pass `false` so it's a real
+  no-op for already-AnimBP characters (only a still-SingleNode follower actually
+  switches). And because a bool *default* silently reverts to autogen on paste, **wire**
+  the `false` (`MakeLiteralBool`), don't default it — see INTERNALS §typed-pin.
 
 ## Multiplayer / replication (the crux of the MP build)
 
@@ -180,6 +189,20 @@ The real game runs a separate **cook → pak** from the Dev Kit's mod tool, e.g.
   authority); a dedicated server uses `-WindowsServer`/`-LinuxServer` — the manager must be cooked
   into the server side too (it is, by default; the server triplet is just smaller because it omits
   the Steam `preview` image).
+- **Ghost duplicates: `delete_asset` doesn't flush disk, and the DevKit has overlapping
+  mounts.** `/Game` is served by several physical roots — a `conan` dev-mount
+  (`Content/Mods/conan/Content/` → `/Game/...`), each mod's mount
+  (`Content/Mods/<mod>/Content/` + a `Local/` write-remap), etc. So one logical path can be
+  backed by several files, and authoring to a scratch root like `/Game/MountedFollowers`
+  leaves copies in more than one. `EditorAssetLibrary.delete_asset` clears the **registry**
+  (`does_asset_exist`→False *in-session*) but often **does not remove the on-disk `.uasset`**,
+  so a content rescan / editor restart **resurrects** it — and it still spawns (a ModController
+  subclass auto-spawns from any **loaded class**, even if the registry entry is gone). `on_disk`
+  via `get_assets_by_package_name(..., include_only_on_disk_assets=True)` is **unreliable** here
+  (read 0 while a real file existed). To truly remove a stale BP: close the editor, **delete the
+  physical `.uasset` files** (find them with a filesystem scan — `system_path` returns the
+  *canonical* `/Game→Content` path, not the real mounted one, so glob by name), reopen, then
+  re-deploy. Clean-slate (delete every copy + one fresh deploy) beats whack-a-mole.
 - **Inspect a pak — never trust the cook silently.** UnrealPak =
   `C:\Program Files\Epic Games\CEUE5Devkit\Engine\Binaries\Win64\UnrealPak.exe`.
   `UnrealPak <Mod>.pak -List` shows the outer files; `-Extract <dir>` then

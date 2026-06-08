@@ -24,7 +24,12 @@ RECIPE = "BP_MF_Recipe"                 # the Stow/Restore cosmetic-mount recipe
 # 26 = Shipping-safe on-screen diagnostics (HUDShowFIFO heartbeat + mount/dismount banners).
 # 27 = relocated to /Game/Mods/MountedFollowers so the controller cooks as a Mod Asset
 #      (the fix for "Invalid class" / never registering in a packaged build).
-MGR_VERSION = 27
+# 28 = removed the on-screen debug messaging (the bForceInit=false default DIDN'T take -- it
+#      silently reverted to autogen 'true', so anims were still broken).
+# 29 = the anim fix done right: bForceInitAnimScriptInstance is now WIRED to a literal false
+#      (a pin default reverts; a wire can't) so the cosmetic-loop reset no longer re-inits every
+#      character's AnimBP every tick.
+MGR_VERSION = 29
 
 # Seated idle pose played on a stowed rider (full object path).
 IDLE_ANIM = ("/Game/Characters/humans/animations/mounted/Horse/"

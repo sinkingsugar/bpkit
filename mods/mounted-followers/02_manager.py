@@ -27,11 +27,6 @@ KSL = "/Script/Engine.KismetSystemLibrary"
 KML = "/Script/Engine.KismetMathLibrary"
 KSTR = "/Script/Engine.KismetStringLibrary"
 KARR = "/Script/Engine.KismetArrayLibrary"
-KTL = "/Script/Engine.KismetTextLibrary"
-
-# Version tag prefixed onto every diagnostic message, so what shows on the player's
-# screen tells you WHICH build is live (a stale cached class prints an old number).
-V = "MF v%d" % MOD.MGR_VERSION
 
 # edit in place (reuse if present) -- deleting+recreating leaves a stale redirector
 # that blocks recreate; the manager uses override EVENTS (not custom events) so
@@ -90,38 +85,6 @@ def dbg_int(label, src_node, src_pin, pos):
     p = g.call("PrintString", KSL, pos=pos)
     g.wire(cat, "ReturnValue", p, "InString", exec=False)
     return p
-
-# --- SHIPPING-SAFE on-screen messages. PrintString is compiled out in Shipping
-# (the packaged Conan client), so debug builds show NOTHING there. These call
-# Conan's own HUD funcs instead, which DO run in Shipping:
-#   HUDShowFIFO(WorldContext, Text)        -- static; prints to the LOCAL client's
-#       scrolling event feed. World context auto-binds to this manager (an actor).
-#       Runs wherever the manager ticks -> client-visible (manager is Always Relevant).
-#   ClientHUDShowNotification(Text,bool)   -- instance Client RPC on the player; call
-#       it server-side on the player ConanCharacter and the banner shows on THAT client.
-# Both take FText, so build the FText from a String via Conv_StringToText. ---
-def txt_lit(s, pos):
-    c = g.call("Conv_StringToText", KTL, pos=pos)
-    g.typed_input(c, "InString", s, "string")
-    return c
-def str2txt(node, pin, pos):
-    c = g.call("Conv_StringToText", KTL, pos=pos)
-    g.wire(node, pin, c, "InString", exec=False)
-    return c
-def fifo(txt_node, pos):
-    """HUDShowFIFO(Text) on the local HUD. WorldContextObject is left unwired so the
-    compiler auto-supplies this BP's self (the manager) -- a valid world context."""
-    f = g.call("HUDShowFIFO", CONAN, pos=pos)
-    g.wire(txt_node, "ReturnValue", f, "Text", exec=False)
-    return f
-def notify(player, txt_node, positive, pos):
-    """ClientHUDShowNotification(Text, Positive) -- Client RPC; self = the player char
-    (call on the server, shows on that player's client)."""
-    n = g.call("ClientHUDShowNotification", CONAN, pos=pos)
-    g.wire(player[0], player[1], n, "self", exec=False)
-    g.wire(txt_node, "ReturnValue", n, "Text", exec=False)
-    g.typed_input(n, "Positive", "true" if positive else "false", "bool")
-    return n
 
 # --- C1 attach/restore node helpers (replicated; reuse the proven Stow/Restore pattern) ---
 CHAR = "/Script/Engine.Character"
@@ -297,56 +260,29 @@ g.wire(animMC, "MountIdleAnim", plMC, "NewAnimToPlay", exec=False)
 g.wire(meshMC, "Mesh", plMC, "self", exec=False)
 g.wire(amMC, "then", plMC, "execute", exec=True)
 # RESET branch: not attached -> AnimBlueprint. Un-seats dismounted followers on CLIENTS (Pass D's
-# server-side reset doesn't replicate). SetAnimationMode early-returns when already in that mode,
-# so this is a no-op for every non-seated character -> safe to run on all of them each tick.
+# server-side reset doesn't replicate). CRITICAL: bForceInitAnimScriptInstance=FALSE. The default
+# (true) RE-INITS the AnimBP on EVERY call even when the mode is already AnimationBlueprint (the
+# engine doc says so explicitly). Running this on every unattached ConanCharacter each tick
+# therefore reinitialized EVERY character's AnimBP every frame -> all animations broke (player +
+# thralls + NPCs). With force=false it's a genuine no-op unless the char is actually in SingleNode
+# (a previously-seated follower), which it then restores exactly once.
 amResetMC = bare_call("SetAnimationMode", SMC, (1500, -1100))
 set_default(amResetMC, "InAnimationMode", "AnimationBlueprint", "byte", enum="EAnimationMode")
+# bForceInitAnimScriptInstance MUST be false. A pin *default* for it silently reverts to the
+# autogen 'true' on reconstruction (bp_ir bool-default gap -- verified: v28 shipped it as true,
+# hence "no change"), so WIRE a literal false; a wired pin cannot revert. MakeLiteralBool with an
+# unset Value returns false.
+falseLit = g.call("MakeLiteralBool", KSL, pos=(1280, -1000))
+g.wire(falseLit, "ReturnValue", amResetMC, "bForceInitAnimScriptInstance", exec=False)
 g.wire(meshMC, "Mesh", amResetMC, "self", exec=False)
 g.wire(bAttMC, "else", amResetMC, "execute", exec=True)
-
-# === DIAG: BeginPlay one-shot -- "<V> SPAWNED auth=<bool>" to the LOCAL event feed.
-# Runs on every instance (NOT authority-gated), so the player's CLIENT shows it once
-# the Always-Relevant manager replicates in -> proof the manager exists client-side.
-# auth=false on a client, auth=true on the listen host / server (server has no local
-# HUD, so HUDShowFIFO there is a harmless no-op). ===
-beginEv = g.event("ReceiveBeginPlay")
-hazBP = g.call("HasAuthority", ACTOR, pos=(300, -1950))
-b2sBP = g.call("Conv_BoolToString", KSTR, pos=(520, -1900))
-g.wire(hazBP, "ReturnValue", b2sBP, "InBool", exec=False)
-catBP = g.call("Concat_StrStr", KSTR, pos=(740, -1950))
-g.typed_input(catBP, "A", V + " SPAWNED auth=", "string")
-g.wire(b2sBP, "ReturnValue", catBP, "B", exec=False)
-fifoBP = fifo(str2txt(catBP, "ReturnValue", (980, -1900)), (1220, -1950))
-g.wire(beginEv, "then", fifoBP, "execute", exec=True)
 
 tick = g.event("ReceiveTick")
 # Manager is Always Relevant, so it exists + ticks on every client. The cosmetic seat loop above is
 # NON-gated (runs on every instance); the gameplay below is server-only (HasAuthority).
 haz = g.call("HasAuthority", ACTOR, pos=(-250, 0))
 bAuth = g.branch(pos=(-50, 0))
-# DIAG: split the non-gated tick -> [then_0] throttled liveness heartbeat to the local
-# event feed, [then_1] the original cosmetic seat loop. Heartbeat reuses DbgCount as a
-# tick counter; every ~300 ticks it shows "<V> alive" so you get a periodic client-side
-# pulse (proves the manager keeps ticking, not just spawned). then_1 preserves the exact
-# original flow (cosmetic loop -> Completed -> server-gated logic).
-tickSeq = seq_node((80, -1300))
-g.wire(tick, "then", tickSeq, "execute", exec=True)
-hbGet = g.var_get("DbgCount", "int", pos=(80, -1500))
-hbAdd = g.call("Add_IntInt", KML, pos=(280, -1500))
-g.wire(hbGet, "DbgCount", hbAdd, "A", exec=False); g.typed_input(hbAdd, "B", "1", "int")
-hbGE = g.call("GreaterEqual_IntInt", KML, pos=(480, -1500))
-g.wire(hbAdd, "ReturnValue", hbGE, "A", exec=False); g.typed_input(hbGE, "B", "300", "int")
-bHb = g.branch(pos=(280, -1300))
-g.wire(tickSeq, "then_0", bHb, "execute", exec=True)
-g.wire(hbGE, "ReturnValue", bHb, "Condition", exec=False)
-hbInc = g.var_set("DbgCount", "int", pos=(500, -1180))   # else: keep counting
-g.wire(hbAdd, "ReturnValue", hbInc, "DbgCount", exec=False)
-g.wire(bHb, "else", hbInc, "execute", exec=True)
-hbZero = g.var_set("DbgCount", "int", pos=(500, -1320)); hbZero.pin("DbgCount").literal("0")
-g.wire(bHb, "then", hbZero, "execute", exec=True)
-fifoHB = fifo(txt_lit(V + " alive", (520, -1440)), (760, -1320))
-g.wire(hbZero, "then", fifoHB, "execute", exec=True)
-g.wire(tickSeq, "then_1", gaC, "execute", exec=True)       # NON-GATED cosmetic seat loop (every instance)
+g.wire(tick, "then", gaC, "execute", exec=True)            # NON-GATED cosmetic seat loop (every instance)
 g.wire(loopMC, "Completed", bAuth, "execute", exec=True)   # THEN the server-gated stow/gameplay
 g.wire(haz, "ReturnValue", bAuth, "Condition", exec=False)
 getP = g.call("GetPlayerCharacter", GS, pos=(0, 350))
@@ -440,12 +376,7 @@ g.wire(getTSC2, "ReturnValue", getFol, "self", exec=False)
 # clear SpareHorses + reset HumanoidCounter before (re)building the spare list each mount
 clrArr = arr_fn("Array_Clear", ir.obj_path(CONAN), (1900, 250))
 g.wire(arr_var("SpareHorses", ir.obj_path(CONAN), (1900, 470)), "SpareHorses", clrArr, "TargetArray", exec=False)
-# DIAG: server detected a mount transition -> banner on the player's client (green).
-# If you see SPAWNED/alive but NEVER this on mounting, the server path isn't running
-# (e.g. GetPlayerCharacter(0) is None on a dedicated server) -- that's the real fault.
-notifyMnt = notify(PLAYER, txt_lit(V + " MOUNT detected", (2050, 380)), True, (2050, 500))
-g.wire(bMounted, "then", notifyMnt, "execute", exec=True)
-g.wire(notifyMnt, "then", clrArr, "execute", exec=True)
+g.wire(bMounted, "then", clrArr, "execute", exec=True)
 setHC0 = g.var_set("HumanoidCounter", "int", pos=(2150, 250)); setHC0.pin("HumanoidCounter").literal("0")
 g.wire(clrArr, "then", setHC0, "execute", exec=True)
 
@@ -559,10 +490,7 @@ chain.then(setHC)
 # DISMOUNT branch: restore each humanoid follower (reverse of stow) -- replicates C1 build_restore
 loopD = g.foreach(CONAN, pos=(2100, 1700))
 g.wire(getFol, "ReturnValue", loopD, "Array", exec=False)
-# DIAG: server detected a dismount transition -> banner on the player's client (red).
-notifyDis = notify(PLAYER, txt_lit(V + " DISMOUNT detected", (1820, 1560)), False, (1820, 1680))
-g.wire(bMounted, "else", notifyDis, "execute", exec=True)
-g.wire(notifyDis, "then", loopD, "Exec", exec=True)
+g.wire(bMounted, "else", loopD, "Exec", exec=True)
 mtblD = g.call("IsMountable", CONAN, pos=(2350, 1930))
 g.wire(loopD, "Array Element", mtblD, "self", exec=False)
 bMtblD = g.branch(pos=(2350, 1700))
