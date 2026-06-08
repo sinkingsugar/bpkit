@@ -72,6 +72,12 @@ by an `Initialized` bool, *not* in `BeginPlay`. Conan's stock template to inspec
 `/Game/Items/Example_modcontroller`. Stamp a version int on the CDO (e.g.
 `MgrVersion`) so you can tell which class actually spawned (stale-class detection).
 
+- **The auto-spawn only fires for mods LOADED AT BOOT.** In PIE every asset is always
+  loaded so the controller always spawns; in a **packaged** build it spawns only if the
+  mod's `modinfo.json` has `"bRequiresLoadOnStartup": true` (set "Requires Load On Startup"
+  in the Dev Kit mod settings). A logic mod left at the default `false` runs perfectly in
+  the editor and **silently does nothing in the real game**. See §Packaging below.
+
 ## Cosmetic mounted rider — the working recipe
 
 Attach + freeze + pose, all content-only and scriptable from Blueprint:
@@ -145,6 +151,52 @@ Attach + freeze + pose, all content-only and scriptable from Blueprint:
   *separate host process* over Win32: the editor's main `UnrealWindow` is DISABLED
   while the modal dialog window stays ENABLED+foreground → post Enter/Esc to the
   enabled one (`dev`-era `dismiss_modal.py`).
+
+## Packaging & shipping a mod (cook → pak)
+
+`/deploy` (bpkit) only authors Blueprints into the **editor** project (`/Game/<Mod>`).
+The real game runs a separate **cook → pak** from the Dev Kit's mod tool, e.g.
+`...\CEUE5Devkit\UE4\Saved\Mods\<Mod>\Output\<Mod>.pak`. Editor success ≠ packaged success.
+
+- **Mod assets MUST live under `/Game/Mods/<ModName>/` — THE one that actually bit us (2026-06-08).**
+  The cook's "Select Content For Mod" dialog tags each asset **(Mod Asset)** (it lives under
+  `/Game/Mods/<mod>/`) or **(Base Asset)** (anywhere else). Conan only **registers ModControllers
+  that are Mod Assets**; a ModController cooked as a **Base Asset loads but is culled as
+  `[1]Invalid class`** (no `AddActiveModControllerClass` line) → runs in PIE, dead in the packaged
+  game. So `mf_config.OUTPUT_PKG` must be the mod's own content root (`/Game/Mods/<mod>`), which is
+  writable in the DevKit when that mod is the **ACTIVE** mod. Authoring into a scratch root like
+  `/Game/<Mod>` is editor-test-only and ships a dead controller. After deploy, confirm in the cook
+  dialog the BPs read **(Mod Asset)**, and delete any stray base-asset copies.
+- **`bRequiresLoadOnStartup` (set it for logic mods, but it was NOT our bug).** A mod with a
+  `ModController` should set **"Requires Load On Startup" = true** in the Dev Kit mod settings →
+  `modinfo.json` `"bRequiresLoadOnStartup": true` (so it loads at boot for the controller scan).
+  Default `false` = a pure content/asset mod. We chased this first; the real failure was the
+  Base/Mod-asset placement above. `unreal.ModInfo` exposes `load_on_startup` /
+  `requires_load_on_startup` / `was_loaded_on_startup` / `load_order`.
+- **Pak layout.** The shipped `<Mod>.pak` is a "fat" pak (mount `../../../ConanSandbox/Mods/`)
+  holding `modinfo.json` + `manifest.json` (per-file MD5s) + **per-platform IoStore triplets**
+  `<Mod>-{Windows,WindowsServer,LinuxServer}.{pak,ucas,utoc}`. The actual cooked assets live in
+  the inner IoStore containers. Single-player/listen uses the client (`-Windows`) content (it has
+  authority); a dedicated server uses `-WindowsServer`/`-LinuxServer` — the manager must be cooked
+  into the server side too (it is, by default; the server triplet is just smaller because it omits
+  the Steam `preview` image).
+- **Inspect a pak — never trust the cook silently.** UnrealPak =
+  `C:\Program Files\Epic Games\CEUE5Devkit\Engine\Binaries\Win64\UnrealPak.exe`.
+  `UnrealPak <Mod>.pak -List` shows the outer files; `-Extract <dir>` then
+  `UnrealPak <Mod>-Windows.utoc -List` lists the **inner cooked asset paths** (e.g.
+  `.../Content/<Mod>/BP_<X>.uasset`). IoStore `.ucas` chunks are **Oodle-compressed** → a raw
+  string/byte grep finds nothing (false negative); use `-List`.
+- **Quick no-recook flag test:** extract the outer pak, flip `bRequiresLoadOnStartup` in
+  `modinfo.json`, update that file's MD5 in `manifest.json`, then `UnrealPak <out>.pak
+  -Create=<filelist>` (lines `"<src>" "../../../ConanSandbox/Mods/<name>"`, uncompressed). Drop the
+  rebuilt pak in and test before committing to a full DevKit re-cook. (Re-cook reverts the flag
+  unless you also tick the checkbox.)
+- **Diagnostics that survive Shipping:** `PrintString` and the `GetAll` console command are
+  compiled out of Shipping (screen + log + console show nothing). Use Conan HUD funcs instead:
+  `ConanCharacter.HUDShowFIFO(text)` — static, prints to the **local** client's event feed (runs
+  wherever the actor ticks; pair with an Always-Relevant manager for client visibility);
+  `ConanCharacter.ClientHUDShowNotification(text, positive)` — instance **Client RPC** (call
+  server-side on the player char → banner on that client). Both take FText → `Conv_StringToText`.
 
 ## Formation system (backburnered — a v2 path)
 

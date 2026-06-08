@@ -15,6 +15,16 @@ OUTPUT_PKG = _cfg.OUTPUT_PKG
 # manager (02) is the mod itself and the recipe (01) is its cosmetic-mount asset.
 BUILD = ["01_recipe.py", "02_manager.py"]
 
+# SHIPPING NOTE -- the controller MUST be a Mod Asset. OUTPUT_PKG (mf_config) points at
+# /Game/Mods/MountedFollowers so the cook tags the BPs "(Mod Asset)" -- a ModController
+# cooked as a "(Base Asset)" (e.g. from the old /Game/MountedFollowers scratch root) LOADS
+# but Conan culls it as "[1]Invalid class" and it never registers: works in PIE, dead in the
+# packaged game (the bug, fixed 2026-06-08). After /deploy, the cook dialog's "Select Content
+# For Mod" must show these as (Mod Asset). preview.uasset = Workshop thumbnail only (optional,
+# uncheck for local testing). Also set "Requires Load On Startup"=true for a ModController mod.
+# Verify a cooked pak: UnrealPak <Mod>.pak -List -> extract -> UnrealPak <Mod>-Windows.utoc -List.
+# Full write-up: docs/CONAN-NOTES.md  §Packaging.
+
 # Source assets to import BEFORE building (anims / meshes / textures shipped with
 # the mod). Empty here -- this mod reuses an existing engine animation
 # (mf_config.IDLE_ANIM) instead of shipping its own. Spec per item:

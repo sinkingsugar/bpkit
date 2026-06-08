@@ -42,6 +42,28 @@ and `docs/` for depth; this file is the operational quick-reference.
   Read the reflected `__doc__` or the BP `FunctionEntry` pins instead (`docs/CONAN-NOTES.md`).
 - A Slate modal freezes the channel → rescue from a host process: `& $py bpkit/ops/dismiss_modal.py enter`.
 
+### Shipping a mod (editor build ≠ packaged mod)
+`/deploy` only authors Blueprints into the **editor** (`/Game/<Mod>`); it does NOT package. The real
+game runs a **cook → pak** produced by the Dev Kit mod tool (e.g. `...\UE4\Saved\Mods\<Mod>\Output\<Mod>.pak`).
+Things that cost real time here:
+- **Mod assets MUST be authored under `/Game/Mods/<ModName>/`** (set `mf_config.OUTPUT_PKG` there;
+  it's writable when that mod is the **active** mod). Only then does the cook tag them **(Mod Asset)**;
+  anything in a scratch root like `/Game/<Mod>` cooks as a **(Base Asset)** and Conan **culls its
+  ModController as `[1]Invalid class`** (loads but never registers — runs in PIE, dead in the packaged
+  game). This was the actual mounted-followers bug (2026-06-08). Confirm in the cook dialog that the BPs
+  read **(Mod Asset)**. (full write-up: `docs/CONAN-NOTES.md` §Packaging.)
+- **A logic mod's ModController should also have "Requires Load On Startup" = true** in the Dev Kit mod
+  settings (→ `modinfo.json` `"bRequiresLoadOnStartup": true`) so it loads at boot. (We chased this
+  first — it was a red herring vs. the Base/Mod-asset issue above, but still correct to set.)
+- **Verify a cooked pak — don't trust the cook silently.** Outer is a "fat" pak; UnrealPak is
+  `C:\Program Files\Epic Games\CEUE5Devkit\Engine\Binaries\Win64\UnrealPak.exe`:
+  `UnrealPak.exe <Mod>.pak -List` (shows `modinfo.json` + per-platform paks), extract, then
+  `UnrealPak.exe <Mod>-Windows.utoc -List` for the IoStore **asset** list. `.ucas` is Oodle-compressed
+  → text-grep finds nothing; always use `-List`.
+- **Shipping strips `PrintString` AND `GetAll`** (screen + log + console). For visible in-game diagnostics
+  use Conan HUD funcs: `ConanCharacter.HUDShowFIFO(text)` (local event feed) or
+  `ClientHUDShowNotification(text, positive)` (server→client banner). Build the FText via `Conv_StringToText`.
+
 ## Where things live
 - **Framework:** `bpkit/` (`bridge`/`ir`/`author`/`compact`/`pe`/`config`) + `bpkit/ops/` (ping, selftest, pie,
   modal, cleanup, log tail, compile-errors, **deploy**). All code uses `from bpkit import ...` (no root shims).
@@ -52,7 +74,8 @@ and `docs/` for depth; this file is the operational quick-reference.
   - `docs/INTERNALS.md` — bridge internals: symbol resolution, FString/TArray/TSet, the by-value `~TSet`
     crash + fix, read/write/edit flows, the typed-pin orphan trap, array/ForEach authoring, compile-flag caveats.
   - `docs/CONAN-NOTES.md` — live-verified Conan facts: mount seating is player-gated, `get_mount` broken
-    (use `get_rider`), follower group caps, the ModController hook, MP/replication rules.
+    (use `get_rider`), follower group caps, the ModController hook, MP/replication rules, **packaging/
+    shipping (the `bRequiresLoadOnStartup` gotcha, pak inspection, Shipping-safe diagnostics)**.
   - `docs/JOURNEY.md` — provenance (how the bridge + mod were reverse-engineered).
   - `mods/mounted-followers/FEASIBILITY.md` — the mounted-followers design audit + roadmap.
 

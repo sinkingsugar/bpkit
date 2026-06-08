@@ -7,20 +7,24 @@ from here, so changing OUTPUT_PKG moves the whole mod in one edit.
 Imported by the builders via bpkit.config.REPO_ROOT (so it works no matter the cwd).
 """
 
-# Content package the generated Blueprint assets are written to.
-# NOTE: this kit is a sandbox project. /Game/Mods is READ-ONLY base content here
-# (save_asset fails there), so use a writable project-content root. When you spin
-# up the real mod project, point this at THAT mod's writable content root -- every
-# builder follows automatically. Verified writable in this kit: /Game/MountedFollowers,
-# /Game/_Scratch, /Game/ModsShared.
-OUTPUT_PKG = "/Game/MountedFollowers"
+# Content package the generated Blueprint assets are written to. MUST be the MOD's own
+# content root (/Game/Mods/<ModName>) so the cook tags them "(Mod Asset)" and Conan
+# REGISTERS the ModController. Assets cooked from anywhere ELSE are "(Base Asset)" -> the
+# ModController loads but is culled as "[1]Invalid class" in a packaged build (runs in PIE,
+# dead in the real game -- the bug we chased 2026-06-08). /Game/Mods/<mod> is writable in
+# the DevKit when that mod is the ACTIVE mod (verified writable 2026-06-08).
+# (Old /Game/MountedFollowers was an editor-only sandbox shortcut -- NOT shippable.)
+OUTPUT_PKG = "/Game/Mods/MountedFollowers"
 
 # Asset names within OUTPUT_PKG.
 MANAGER = "BP_MountedFollowerManager"   # the ModController manager (the mod itself)
 RECIPE = "BP_MF_Recipe"                 # the Stow/Restore cosmetic-mount recipe
 
 # Stamped on the manager CDO so you can tell which build actually spawned.
-MGR_VERSION = 25
+# 26 = Shipping-safe on-screen diagnostics (HUDShowFIFO heartbeat + mount/dismount banners).
+# 27 = relocated to /Game/Mods/MountedFollowers so the controller cooks as a Mod Asset
+#      (the fix for "Invalid class" / never registering in a packaged build).
+MGR_VERSION = 27
 
 # Seated idle pose played on a stowed rider (full object path).
 IDLE_ANIM = ("/Game/Characters/humans/animations/mounted/Horse/"

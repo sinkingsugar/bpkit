@@ -23,3 +23,8 @@ This reads `mods/$ARGUMENTS/manifest.py`, imports any source `ASSETS`, then runs
 
 ## 4. Report
 Mod name → output package, which steps ran, asset imports, and the final verdict. If you fixed something to get it green, say exactly what.
+
+## 5. Shipping ≠ deploying
+`/deploy` only authors into the **editor** (`/Game/<Mod>`) for PIE testing; it does NOT package. The real game runs a separate **cook → pak** from the Dev Kit mod tool (e.g. `...\UE4\Saved\Mods\<Mod>\Output\<Mod>.pak`). If the user says "works in editor but not in the real/packaged game," it's almost always packaging, not the graph:
+- A mod with a `ModController` (any `mods/*/02_manager`-style logic) needs **"Requires Load On Startup" = true** in the Dev Kit mod settings (`modinfo.json` `bRequiresLoadOnStartup`) — otherwise the controller auto-spawns in PIE but **silently never spawns packaged**.
+- Verify the cooked pak (don't trust it): `UnrealPak.exe <Mod>.pak -List` → extract → `UnrealPak.exe <Mod>-Windows.utoc -List` for the inner asset list (IoStore `.ucas` is Oodle-compressed — use `-List`, never grep). Shipping strips `PrintString`/`GetAll`; use `HUDShowFIFO` / `ClientHUDShowNotification` for visible diagnostics. Full write-up: `docs/CONAN-NOTES.md` §Packaging.
