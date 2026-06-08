@@ -29,7 +29,9 @@ RECIPE = "BP_MF_Recipe"                 # the Stow/Restore cosmetic-mount recipe
 # 29 = the anim fix done right: bForceInitAnimScriptInstance is now WIRED to a literal false
 #      (a pin default reverts; a wire can't) so the cosmetic-loop reset no longer re-inits every
 #      character's AnimBP every tick.
-MGR_VERSION = 29
+# 30 = the cosmetic seat now only applies when the attach PARENT is a mountable horse, so thralls
+#      attached to benches/wheels/stations are no longer wrongly put in the saddle pose/offset.
+MGR_VERSION = 30
 
 # Seated idle pose played on a stowed rider (full object path).
 IDLE_ANIM = ("/Game/Characters/humans/animations/mounted/Horse/"

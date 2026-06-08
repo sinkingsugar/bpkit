@@ -252,7 +252,21 @@ g.wire(castMC, "AsConan Character", isMtblMC, "self", exec=False)
 bMtblMC = g.branch(pos=(1500, -1300))
 g.wire(bPlayerMC, "else", bMtblMC, "execute", exec=True)
 g.wire(isMtblMC, "ReturnValue", bMtblMC, "Condition", exec=False)
-g.wire(bMtblMC, "else", amMC, "execute", exec=True)   # not player AND not mountable -> seat
+# SEAT ONLY IF THE ATTACH PARENT IS ONE OF OUR HORSES. The loop catches ANY attached,
+# non-player, non-mountable character -- which wrongly seated thralls attached to benches /
+# wheels of pain / stations (saddle pose -> visual offset). A mounted follower is attached to
+# a horse (a ConanCharacter with IsMountable=true); a bench/placeable parent is neither. So
+# cast the attach parent to ConanCharacter and require IsMountable before posing; a non-horse
+# parent fails the cast (or IsMountable) and the character is left exactly as the game set it.
+castParMC = cast_node(CONAN, (1700, -1500))
+g.wire(getParMC, "ReturnValue", castParMC, "Object", exec=False)
+g.wire(bMtblMC, "else", castParMC, "execute", exec=True)   # not player AND not mountable -> check parent
+parMtblMC = g.call("IsMountable", CONAN, pos=(1900, -1500))
+g.wire(castParMC, "AsConan Character", parMtblMC, "self", exec=False)
+bParMtblMC = g.branch(pos=(1750, -1300))   # cast-fail (parent not a ConanCharacter) dead-ends -> skip
+g.wire(castParMC, "then", bParMtblMC, "execute", exec=True)
+g.wire(parMtblMC, "ReturnValue", bParMtblMC, "Condition", exec=False)
+g.wire(bParMtblMC, "then", amMC, "execute", exec=True)   # parent IS a mountable horse -> seat
 plMC = bare_call("PlayAnimation", SMC, (1550, -1300))
 set_default(plMC, "bLooping", "true", "bool")
 animMC = var_self("MountIdleAnim", (1300, -1600))
