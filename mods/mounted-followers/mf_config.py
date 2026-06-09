@@ -31,7 +31,21 @@ RECIPE = "BP_MF_Recipe"                 # the Stow/Restore cosmetic-mount recipe
 #      character's AnimBP every tick.
 # 30 = the cosmetic seat now only applies when the attach PARENT is a mountable horse, so thralls
 #      attached to benches/wheels/stations are no longer wrongly put in the saddle pose/offset.
-MGR_VERSION = 30
+# 31 = FIX "seated thrall slides to the ground while still saddled". The one-shot stow freeze
+#      (DisableMovement, fired once on the mount transition) is REVERSIBLE -- Conan's follower
+#      catch-up/leash AI re-enables the rider's movement after a while of riding and
+#      CharacterMovement then walks the STILL-attached pawn down to the ground (user-confirmed:
+#      the actor never detaches). Added a per-tick server MAINTAIN pass: for every humanoid still
+#      seated on a horse, re-pin MOVE_None + re-assert the saddle relative transform. Trigger-
+#      agnostic (defeats a movement-mode flip AND a teleport/recall drift), server-authoritative
+#      so it fixes SP + listen + dedicated. (Debug build -- carries diagnostic PrintStrings that
+#      only show in PIE/non-Shipping; strip them in polish.)
+# 32 = same maintain-pass FIX as v31, but the bug ONLY repros in the COOKED game (never PIE), so the
+#      diagnostics are now Shipping-safe + lean: PrintString (compiled out of Shipping) is replaced by
+#      Conan HUDShowFIFO, fired at most ONCE per ride -- a "mounted -- stowing" banner on mount and a
+#      "kept a rider seated" banner the first time the maintain pass catches the leash re-mobilizing a
+#      rider (ReportedFight bool, re-armed at stow). No per-tick spam. Strip both at final polish.
+MGR_VERSION = 32
 
 # Seated idle pose played on a stowed rider (full object path).
 IDLE_ANIM = ("/Game/Characters/humans/animations/mounted/Horse/"

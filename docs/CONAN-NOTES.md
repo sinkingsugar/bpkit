@@ -62,6 +62,13 @@ fully **reflected** to Python, which is how it was audited.
   `CreatureAIControllerHooved`. Follow logic drives the follower's *own*
   `CharacterMovementComponent` — there is no native path where a follower drives a
   separate mount pawn (the exact gap that makes mounted followers unshipped).
+- **Followers leash / catch-up.** The follower AI recalls a follower that falls too far
+  behind (`is_ai_controller_leashing`; mounted catch-up: `wait_for_catch_up_time` /
+  `has_time_catched_up` / `try_resume_from_catch_up_time` / `teleport`) by **re-enabling its
+  `CharacterMovement`** (`MOVE_None`→`Walking`) and sometimes teleporting it. This silently
+  undoes a *one-shot* movement freeze on a stowed/seated follower — see the cosmetic-rider
+  recipe's freeze bullet. **Triggers in the cooked game, rarely in PIE** (PIE's small
+  always-loaded world keeps followers close enough to never trip it).
 
 ## Persistent mod logic — the ModController hook
 
@@ -91,6 +98,17 @@ Attach + freeze + pose, all content-only and scriptable from Blueprint:
   physics off. **Keep the skeletal-mesh component ticking** — disabling its tick
   freezes animation evaluation. Use runtime setters on live components, not
   `set_editor_property`.
+- **The freeze must be RE-ASSERTED every (server) tick, not done once.** A stowed follower is
+  still AI-possessed, and Conan's follower **catch-up/leash** (see §Followers) re-enables its
+  `CharacterMovement` once you ride far enough — `CharacterMovement` then walks the *still-
+  attached* pawn to the ground (the actor never detaches, so the cosmetic pose stays → a saddle-
+  posed thrall jogging beside you). A one-shot `disable_movement()` at stow is reversible. Fix:
+  a per-tick **server** (`HasAuthority`) pass that re-pins `MOVE_None` **and** re-asserts the
+  saddle relative loc/rot on every seated follower (trigger-agnostic — also corrects a
+  teleport/recall drift). If the AI still jitters, escalate to `ConanPlayerController.
+  command_follower(follower, loc, AIFollowerOrderType.HOLD)` to stop it at the source.
+  **Cook-ONLY repro** (never PIE) → test packaged, with `HUDShowFIFO` not `PrintString`.
+  (live-verified v32, cooked SP 2026-06-09)
 - **Pose:** force a seated single-node anim over the AnimBP —
   `set_animation_mode(ANIMATION_SINGLE_NODE)` + `play_animation(anim, loop=True)`
   after `stop_all_montages`. Idle clip:

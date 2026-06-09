@@ -421,3 +421,35 @@ PinType or they orphan and the autogen default silently wins; never compile a BP
 (`no-bp-edit-during-pie`); a stale BP reload collision-renames pasted custom events (delete the
 asset for a clean build, Play stopped); `Summon` needs the class pre-`load_object`'d and spawns
 deferred a frame; finite-lifespan NPCs (undead) vaporize when summoned ownerless.
+
+---
+
+## 11. The "seated follower slides to the ground" bug — durable freeze (v31→v32, 2026-06-09)
+
+**Symptom.** You mount and ride; a follower rides fine, then *after a while* the thrall is
+suddenly on the ground following you — yet still in the mounted idle pose and at the saddle
+offset. Erratic. **Repros ONLY in the cooked/packaged game — never in PIE.**
+
+**Diagnosis.** The actor never detaches (user-verified), so the cosmetic seat loop keeps posing
+it; what changes is the rider's *own* movement. Conan's follower **catch-up / leash AI**
+(`ConanCharacter.is_ai_controller_leashing`, `wait_for_catch_up_time` / `has_time_catched_up` /
+`try_resume_from_catch_up_time`, `teleport`) re-enables the seated follower's
+`CharacterMovement` (`MOVE_None`→`Walking`) once you ride far enough; `CharacterMovement` then
+walks the still-attached pawn down to the ground. The original stow freeze (`disable_movement()`)
+was applied **once** on the mount transition, so a single AI re-enable broke it permanently until
+dismount. PIE's small always-loaded world rarely makes a follower fall far enough behind to trip
+the leash → no PIE repro (and `PrintString` is compiled out of Shipping, so diagnostics had to
+move to `ConanCharacter.HUDShowFIFO`).
+
+**Fix (v32, live-confirmed cooked SP).** A per-tick **server** (`HasAuthority`) MAINTAIN pass,
+chained off the tick scan: for each humanoid still seated on a mountable horse, re-pin
+`disable_movement()` (MOVE_None) **and** re-assert the saddle relative loc/rot **every tick**.
+Trigger-agnostic — defeats both a movement-mode flip and a teleport/recall drift. Server-
+authoritative, so it covers SP + listen + dedicated; the per-client cosmetic pose loop is
+untouched. Confirmed when the lean once-per-ride `HUDShowFIFO` "kept a rider seated" banner fired
+(= the leash *did* trigger) while the follower stayed seated. If the AI ever jitters, escalate to
+`ConanPlayerController.command_follower(follower, loc, AIFollowerOrderType.HOLD)` at stow to stop
+it at the source. **MP (listen/dedicated) still to verify.**
+
+**Lesson.** A one-shot freeze on a still-AI-possessed follower is not durable — maintain it every
+tick (or stop the AI), and never trust a clean PIE run for follower/leash behaviour.
