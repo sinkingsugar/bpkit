@@ -80,6 +80,11 @@ Working SP + MP (listen-server), verified in the **cooked/packaged game** — in
 seated rider's movement; a per-tick server maintain pass re-pins it; cook-only repro).
 v33 is the release build: identical logic, all on-screen diagnostics stripped.
 
+Known limitation: the manager tracks **player index 0 only** (`GetPlayerCharacter(0)`
+— the host on a listen server), so in MP other players' followers don't stow yet;
+replication is in place, so everyone *sees* the host's mounted warband. Per-player
+tracking (iterate all player states) is the top roadmap item.
+
 Remaining polish (see [FEASIBILITY.md §9](FEASIBILITY.md)): combat behavior is an
 accepted limitation (dismount to fight — mounted AI combat is player-gated native),
 per-mount socket/pose tuning (camel/rhino), and persistence across relog (self-healing:

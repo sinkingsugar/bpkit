@@ -20,7 +20,27 @@ for f in fols:
     call(f, "leave_formation")
     try: f.set_editor_property("can_autojoin_formation", False)
     except Exception: pass
-    # 3) un-stow if its mesh got left attached to a horse: detach to own capsule + re-enable
+    # 3) v30+ stows ACTOR-attach the follower to the horse (the rider's own mesh stays
+    # parented to its capsule, so the mesh check below never fires for them): detach the
+    # actor, re-enable movement/collision, restore the AnimBP.
+    try:
+        par_actor = f.get_attach_parent_actor()
+        if par_actor and par_actor != f:
+            f.detach_from_actor(unreal.DetachmentRule.KEEP_WORLD,
+                                unreal.DetachmentRule.KEEP_WORLD,
+                                unreal.DetachmentRule.KEEP_WORLD)
+            f.set_actor_enable_collision(True)
+            try:
+                f.get_editor_property("CharacterMovement").set_movement_mode(
+                    unreal.MovementMode.MOVE_WALKING, 0)
+            except Exception:
+                pass
+            f.get_editor_property("Mesh").set_animation_mode(
+                unreal.AnimationMode.ANIMATION_BLUEPRINT)
+            print("  actor-detached", f.get_class().get_name())
+    except Exception as e:
+        print("  actor-detach err on", f.get_class().get_name(), str(e)[:40])
+    # 3b) legacy (pre-v30) mesh-attach un-stow: detach mesh to own capsule + re-enable
     try:
         mesh = f.get_editor_property("Mesh")
         cap = f.get_editor_property("CapsuleComponent")

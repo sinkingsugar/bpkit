@@ -34,6 +34,10 @@ THE HONEST CORNER
   jockeys). The horses do the running.
 - On relog everything respawns clean - worst case your thralls are
   standing, not broken.
+- Multiplayer today tracks ONE rider: the first player (the host, on a
+  co-op/listen server). Everyone SEES the mounted warband, but only the
+  host's retinue saddles up. Every-player support is top of the roadmap -
+  reports from dedicated servers especially welcome.
 
 EXPERIMENTAL - RIDE AT THE FRONT OF THE CHARGE
 This is an early release. It is tested in single-player and on a listen
@@ -45,7 +49,7 @@ warband ride harder.
 
 A PEDIGREE OF SADDLES
 From the author of the ORIGINAL Mounted Followers for Skyrim (Nexus Mods,
-thousands of endorsements, back when shouting at dragons was novel). Some
+many endorsements, back when shouting at dragons was novel). Some
 of us have spent fifteen years refusing to let followers walk.
 
 FORGED BY AN AI - YES, REALLY
