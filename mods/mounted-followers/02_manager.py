@@ -28,6 +28,18 @@ TSC = "/Script/ConanSandbox.ThrallSystemComponent"
 GS = "/Script/Engine.GameplayStatics"
 KSL = "/Script/Engine.KismetSystemLibrary"
 KML = "/Script/Engine.KismetMathLibrary"
+KTL = "/Script/Engine.KismetTextLibrary"
+
+# === DIAGNOSTIC FLAGS (see README §Debugging) ===
+# DEBUG: PIE-only PrintString beacons at the one-shot beats (caps/stow/sweep/rescue + leash
+#   catch). On screen + log + `~` console. PrintString is compiled OUT of Shipping, so these
+#   never reach players -- but flip False for the release deploy to keep the graph lean.
+# HUD_DIAG: SHIP-VISIBLE HUDShowFIFO banner ("kept a rider seated", once per ride) when the
+#   maintain pass catches the leash AI re-mobilizing a seated rider. The leash bug only
+#   reproduces in the COOKED game where PrintString doesn't exist -- this is the one signal
+#   that survives there (the proven v26-v32 pattern).
+DEBUG = True
+HUD_DIAG = True
 
 # edit in place (reuse if present) -- deleting+recreating leaves a stale redirector
 # that blocks recreate; the manager uses override EVENTS (not custom events) so
@@ -58,6 +70,10 @@ for vn in ("SpareHorses", "OccupiedHorses", "ActiveSeats", "InitializedPlayers")
     unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, vn, conan_arr)
 anim_ref = unreal.BlueprintEditorLibrary.get_object_reference_type(unreal.AnimSequence.static_class())
 unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, "MountIdleAnim", anim_ref)
+if HUD_DIAG:
+    # once-per-ride latch for the "kept a rider seated" banner (re-armed while unmounted)
+    boolt = unreal.BlueprintEditorLibrary.get_basic_type_by_name("bool")
+    unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, "ReportedCatch", boolt)
 ANIM = MOD.IDLE_ANIM
 
 g = ir.Graph("EventGraph")
@@ -66,19 +82,24 @@ def cast_node(target, pos):
     return g.node("K2Node_DynamicCast",
                   ['TargetType="/Script/CoreUObject.Class\'%s\'"' % target], base="DynamicCast", pos=pos)
 
-# --- PIE DIAGNOSTICS (v35). DEBUG=True authors PrintString beacons at every ONE-SHOT beat
-# (caps applied / rider stowed / sweep restore / statue rescue) -- on screen AND the log, so
-# they read in the `~` console too. No per-tick spots are instrumented (level-triggered logic
-# would spam 10/s). PrintString is compiled OUT of Shipping, so even a DEBUG build never shows
-# players anything -- but set False for the release deploy anyway to keep the graph lean.
-# (For SHIPPING-visible diagnostics use ConanCharacter.HUDShowFIFO(FText) -- see git history
-# v26-v32 and docs/CONAN-NOTES.md §Packaging.)
-DEBUG = True
+# --- diagnostic node helpers (flags defined at the top; see README §Debugging) ---
 def dbg(msg, pos):
-    """A PrintString of a literal; wire exec in/out via execute/then. Only call under DEBUG."""
+    """PrintString beacon, auto-stamped with the build version; wire exec via execute/then.
+    Only call under DEBUG. PIE-only (PrintString is compiled out of Shipping)."""
     p = g.call("PrintString", KSL, pos=pos)
-    g.typed_input(p, "InString", msg, "string")
+    g.typed_input(p, "InString", "MF v%d: %s" % (MOD.MGR_VERSION, msg), "string")
     return p
+def txt_lit(s, pos):
+    c = g.call("Conv_StringToText", KTL, pos=pos)
+    g.typed_input(c, "InString", s, "string")
+    return c
+def fifo(txt_node, pos):
+    """SHIP-VISIBLE banner: ConanCharacter.HUDShowFIFO(FText) -> the local client's scrolling
+    event feed; survives Shipping. WorldContextObject is AUTO-MANAGED: the compiler binds it to
+    self (manual links to it are DROPPED on paste -- verified v26). Only call under HUD_DIAG."""
+    f = g.call("HUDShowFIFO", CONAN, pos=pos)
+    g.wire(txt_node, "ReturnValue", f, "Text", exec=False)
+    return f
 
 # --- C1 attach/restore node helpers (replicated; reuse the proven Stow/Restore pattern) ---
 CHAR = "/Script/Engine.Character"
@@ -355,7 +376,7 @@ g.wire(P[0], P[1], addInit, "NewItem", exec=False)
 g.wire(prev, prev_pin, addInit, "execute", exec=True)
 initTail = addInit
 if DEBUG:
-    dbgInit = dbg("MF v35: +5 follower caps applied (new player)", (1450 + 7 * 260, 0))
+    dbgInit = dbg("+5 follower caps applied (new player)", (1450 + 7 * 260, 0))
     g.wire(addInit, "then", dbgInit, "execute", exec=True)
     initTail = dbgInit
 
@@ -503,7 +524,36 @@ rMoveB = comp_of(loopB, "Array Element", "CharacterMovement", (3800, 2380))
 # MAINTAIN (seated): idempotent when already frozen; instantly undoes the leash AI's re-enable.
 disableM = bare_call("DisableMovement", CMC, (3850, 1500))
 g.wire(rMoveB, "CharacterMovement", disableM, "self", exec=False)
-g.wire(bSeatB, "then", disableM, "execute", exec=True)
+if HUD_DIAG:
+    # CATCH DETECTION: sample IsMovingOnGround BEFORE the re-pin -- true means the leash AI
+    # actually re-mobilized this seated rider and the maintain pass is earning its keep.
+    # Report ONCE per ride (ReportedCatch, re-armed while the owner is on foot): a HUDShowFIFO
+    # banner (ship-visible -- the leash only repros COOKED) + a DEBUG PrintString for the log.
+    movingB = g.call("IsMovingOnGround", CMC, pos=(3850, 1300))
+    g.wire(rMoveB, "CharacterMovement", movingB, "self", exec=False)
+    bMovB = g.branch(pos=(4050, 1300))
+    g.wire(bSeatB, "then", bMovB, "execute", exec=True)
+    g.wire(movingB, "ReturnValue", bMovB, "Condition", exec=False)
+    getRC = g.var_get("ReportedCatch", "bool", pos=(4250, 1150))
+    bRC = g.branch(pos=(4300, 1300))
+    g.wire(bMovB, "then", bRC, "execute", exec=True)
+    g.wire(getRC, "ReportedCatch", bRC, "Condition", exec=False)
+    fifoCatch = fifo(txt_lit("Mounted Followers v%d: kept a rider seated" % MOD.MGR_VERSION,
+                             (4500, 1100)), (4700, 1150))
+    g.wire(bRC, "else", fifoCatch, "execute", exec=True)   # first catch this ride -> banner
+    catchTail = fifoCatch
+    if DEBUG:
+        dbgCatch = dbg("leash maintain caught a re-mobilized rider -- re-pinned", (4900, 1150))
+        g.wire(fifoCatch, "then", dbgCatch, "execute", exec=True)
+        catchTail = dbgCatch
+    setRC = g.var_set("ReportedCatch", "bool", pos=(5100, 1150)); setRC.pin("ReportedCatch").literal("true")
+    g.wire(catchTail, "then", setRC, "execute", exec=True)
+    # all paths converge on the re-pin (exec inputs merge)
+    g.wire(setRC, "then", disableM, "execute", exec=True)   # first catch, after the banner
+    g.wire(bRC, "then", disableM, "execute", exec=True)     # already reported this ride
+    g.wire(bMovB, "else", disableM, "execute", exec=True)   # not moving -> routine re-pin
+else:
+    g.wire(bSeatB, "then", disableM, "execute", exec=True)
 setRelM = bare_call("K2_SetActorRelativeLocation", ACTOR, (4100, 1500))
 relpM = setRelM.pin("NewRelativeLocation"); relpM.dir = "EGPD_Input"
 type_struct(relpM, "/Script/CoreUObject.Vector"); relpM.set("DefaultValue", '"0.000000,0.000000,90.000000"')
@@ -581,7 +631,7 @@ g.typed_input(addHC, "B", "1", "int")
 setHC = g.var_set("HumanoidCounter", "int", pos=(6000, 1850)); g.wire(addHC, "ReturnValue", setHC, "HumanoidCounter", exec=False)
 chain.then(setHC)
 if DEBUG:
-    chain.then(dbg("MF v35: stowed a rider onto a spare horse", (6250, 1850)))
+    chain.then(dbg("stowed a rider onto a spare horse", (6250, 1850)))
 
 # NOT MOUNTED housekeeping pass over the followers. Horses: reset the staggered follow
 # distance (the stagger otherwise outlives the ride). Humanoids: STATUE RESCUE -- if a horse
@@ -595,7 +645,13 @@ if DEBUG:
 # the list mid-ride, owners who logged out while mounted).
 loopDist = g.foreach(CONAN, pos=(2550, 3050))
 g.wire(getFolP, "ReturnValue", loopDist, "Array", exec=False)
-g.wire(bMountedP, "else", loopDist, "Exec", exec=True)
+distEntry = (bMountedP, "else")
+if HUD_DIAG:
+    # re-arm the once-per-ride "kept a rider seated" banner while the owner is on foot
+    setRC0 = g.var_set("ReportedCatch", "bool", pos=(2350, 3050)); setRC0.pin("ReportedCatch").literal("false")
+    g.wire(bMountedP, "else", setRC0, "execute", exec=True)
+    distEntry = (setRC0, "then")
+g.wire(distEntry[0], distEntry[1], loopDist, "Exec", exec=True)
 mtblD0 = g.call("IsMountable", CONAN, pos=(2800, 3280))
 g.wire(loopDist, "Array Element", mtblD0, "self", exec=False)
 bMtblD0 = g.branch(pos=(2800, 3050))
@@ -639,7 +695,7 @@ set_default(colD0, "bNewActorEnableCollision", "true", "bool")
 g.wire(loopDist, "Array Element", colD0, "self", exec=False)
 g.wire(walkD0, "then", colD0, "execute", exec=True)
 if DEBUG:
-    dbgResc = dbg("MF v35: statue rescue (unfroze a stranded rider)", (4300, 3050))
+    dbgResc = dbg("statue rescue (unfroze a stranded rider)", (4300, 3050))
     g.wire(colD0, "then", dbgResc, "execute", exec=True)
 
 # === GLOBAL RESTORE SWEEP (after the player loop): any humanoid still seated on a horse NO
@@ -704,7 +760,7 @@ set_default(colG, "bNewActorEnableCollision", "true", "bool")
 g.wire(castG, "AsConan Character", colG, "self", exec=False)
 chainG.then(colG)
 if DEBUG:
-    chainG.then(dbg("MF v35: sweep-restored a rider (dismount/orphan)", (3250, 3700)))
+    chainG.then(dbg("sweep-restored a rider (dismount/orphan)", (3250, 3700)))
 
 text = g.render()
 n_authored = text.count("Begin Object Class=")

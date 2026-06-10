@@ -78,7 +78,13 @@ RECIPE = "BP_MF_Recipe"                 # the Stow/Restore cosmetic-mount recipe
 #      player exclusion a no-op since v30 (harmless by luck). Fix: IsPlayerControlled (reflected
 #      in this build; both gated passes are server-side where it's accurate) in all 3 spots, and
 #      a new authored-vs-pasted node-count guard in the build self-check (the only tell).
-MGR_VERSION = 36
+# 37 = diagnostics polish (single-player CONFIRMED WORKING on v36): dbg beacons auto-stamp the
+#      build version; NEW HUD_DIAG flag -- ship-visible HUDShowFIFO "kept a rider seated" banner
+#      (once per ride, ReportedCatch latch re-armed while on foot) when the maintain pass
+#      catches the leash AI re-mobilizing a seated rider, because the leash only repros in the
+#      COOKED game where PrintString doesn't exist. DEBUG adds a matching log line in PIE.
+#      Release deploy: DEBUG=False, HUD_DIAG to taste (recommended True).
+MGR_VERSION = 37
 
 # Seated idle pose played on a stowed rider (full object path).
 IDLE_ANIM = ("/Game/Characters/humans/animations/mounted/Horse/"

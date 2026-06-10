@@ -73,6 +73,34 @@ loads but gets culled as `[1]Invalid class` in the packaged game — runs in PIE
 in the real game. Full packaging checklist (cook dialog, pak verification with
 UnrealPak): [`docs/CONAN-NOTES.md`](../../docs/CONAN-NOTES.md) §Packaging.
 
+## Debugging — the beacon system
+
+Two flags at the top of [`02_manager.py`](02_manager.py) control built-in diagnostics
+(redeploy after flipping either):
+
+- **`DEBUG`** — PIE-only **PrintString beacons**, auto-stamped with the build version,
+  authored at every *one-shot* beat (never per-tick — the level-triggered logic would
+  spam 10/s). They show on screen, in the output log, and in the in-game `~` console
+  (`LogBlueprintUserMessages`). PrintString is compiled **out of Shipping**, so a DEBUG
+  build never shows players anything — but ship with `False` to keep the graph lean.
+  - `+5 follower caps applied (new player)` — once per player pawn, seconds after spawn.
+    *Not seeing this means the per-player pass is dead — check the paste-drop guard.*
+  - `stowed a rider onto a spare horse` — once per rider on mount.
+  - `sweep-restored a rider (dismount/orphan)` — once per rider on dismount (or orphan
+    cleanup).
+  - `statue rescue (unfroze a stranded rider)` — only when a rider's horse died mid-ride.
+  - `leash maintain caught a re-mobilized rider` — log copy of the HUD_DIAG catch below.
+- **`HUD_DIAG`** — a **ship-visible** `HUDShowFIFO` banner (*"kept a rider seated"*, once
+  per ride, re-armed while on foot) when the maintain pass catches Conan's leash AI
+  re-enabling a seated rider's movement. This one survives Shipping **by design**: the
+  leash bug only reproduces in the cooked game, where PrintString doesn't exist — this
+  banner is the only signal that the fix is earning its keep out there.
+
+Build-time self-checks printed by every deploy: orphaned-pin scan, unresolved-wildcard /
+error-marker scan, and the **authored-vs-pasted node-count guard** (paste silently drops
+nodes whose function doesn't exist on the build — see `docs/INTERNALS.md` §8; that
+mechanism once shipped a dead build).
+
 ## Status
 
 **Shipping (experimental — feedback wanted, especially multiplayer/dedicated).**
