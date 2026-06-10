@@ -1,6 +1,6 @@
 ---
 name: bpkit
-description: Drive Unreal Engine 5 Blueprint graphs from outside the editor with bpkit — read, author, edit, inject and compile K2 node graphs over the remote-exec channel. Use for ANY UE Blueprint node-graph task: authoring nodes, fixing pins, mod authoring, reading a graph. (Windows + an editor build with Remote Execution on.)
+description: Drive Unreal Engine 5 Blueprint graphs from outside the editor with bpkit — read, author, edit, inject and compile K2 node graphs over the remote-exec channel. Use for ANY UE Blueprint node-graph task: authoring nodes, fixing pins, mod authoring, reading a graph — AND for answering "how does this game mechanic work?" by reading the game's own shipped Blueprints. (Windows + an editor build with Remote Execution on.)
 paths: bpkit/**, mods/**, examples/**, tests/**
 ---
 

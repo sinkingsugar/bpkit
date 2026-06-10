@@ -79,11 +79,11 @@ by an `Initialized` bool, *not* in `BeginPlay`. Conan's stock template to inspec
 `/Game/Items/Example_modcontroller`. Stamp a version int on the CDO (e.g.
 `MgrVersion`) so you can tell which class actually spawned (stale-class detection).
 
-- **The auto-spawn only fires for mods LOADED AT BOOT.** In PIE every asset is always
-  loaded so the controller always spawns; in a **packaged** build it spawns only if the
-  mod's `modinfo.json` has `"bRequiresLoadOnStartup": true` (set "Requires Load On Startup"
-  in the Dev Kit mod settings). A logic mod left at the default `false` runs perfectly in
-  the editor and **silently does nothing in the real game**. See §Packaging below.
+- **What actually gates the packaged auto-spawn is (Mod Asset) placement, NOT
+  `bRequiresLoadOnStartup`.** The "spawns only if loaded at boot" theory was the packaging
+  bringup's red herring: empirically a ModController cooked as a **(Mod Asset)** registers and
+  spawns in the packaged game with the flag at its default `false` (live-verified, cooked game,
+  2026-06-10). See §Packaging below.
 
 ## Cosmetic mounted rider — the working recipe
 
@@ -194,12 +194,13 @@ The real game runs a separate **cook → pak** from the Dev Kit's mod tool, e.g.
   writable in the DevKit when that mod is the **ACTIVE** mod. Authoring into a scratch root like
   `/Game/<Mod>` is editor-test-only and ships a dead controller. After deploy, confirm in the cook
   dialog the BPs read **(Mod Asset)**, and delete any stray base-asset copies.
-- **`bRequiresLoadOnStartup` (set it for logic mods, but it was NOT our bug).** A mod with a
-  `ModController` should set **"Requires Load On Startup" = true** in the Dev Kit mod settings →
-  `modinfo.json` `"bRequiresLoadOnStartup": true` (so it loads at boot for the controller scan).
-  Default `false` = a pure content/asset mod. We chased this first; the real failure was the
-  Base/Mod-asset placement above. `unreal.ModInfo` exposes `load_on_startup` /
-  `requires_load_on_startup` / `was_loaded_on_startup` / `load_order`.
+- **`bRequiresLoadOnStartup` is NOT needed (and was NOT our bug).** A ModController mod registers
+  and spawns in the packaged game with the flag at its default `false`, as long as the controller
+  is a **(Mod Asset)** (live-verified, cooked game, 2026-06-10). The flag ("Requires Load On
+  Startup" in the Dev Kit mod settings → `modinfo.json`) was chased first during the bringup and
+  was a red herring; reserve it for mods that genuinely need their content loaded at boot.
+  `unreal.ModInfo` exposes `load_on_startup` / `requires_load_on_startup` /
+  `was_loaded_on_startup` / `load_order`.
 - **Pak layout.** The shipped `<Mod>.pak` is a "fat" pak (mount `../../../ConanSandbox/Mods/`)
   holding `modinfo.json` + `manifest.json` (per-file MD5s) + **per-platform IoStore triplets**
   `<Mod>-{Windows,WindowsServer,LinuxServer}.{pak,ucas,utoc}`. The actual cooked assets live in

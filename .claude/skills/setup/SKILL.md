@@ -9,7 +9,7 @@ Run bpkit's readiness check **as a smart diagnosis, not a pass/fail script** —
 ## 1. Channel
 `& $py ue_run.py bpkit/ops/ping.py`
 - `ENGINE_VERSION` printed → live.
-- `no editor node found` → editor not running or Remote Execution off. Tell the user: launch the Dev Kit editor, then **Project Settings → Plugins → Python → enable "Remote Execution"**, then re-run `/setup`.
+- `no editor node found` → editor not running, the Python plugin disabled, or Remote Execution off. Tell the user: launch the editor; confirm **Edit → Plugins → "Python Editor Script Plugin"** is enabled (restart the editor after enabling — without it the remote-exec setting doesn't even exist); then **Project Settings → Plugins → Python → enable "Remote Execution"**; re-run `/setup`.
 - Python path error → set `$env:BPKIT_PYTHON` to `<engine>\Engine\Binaries\ThirdParty\Python3\Win64\python.exe` (or edit `BPKIT_ENGINE_ROOT` in `bpkit/config.py`).
 
 ## 2. Native bridge (the important diagnosis)

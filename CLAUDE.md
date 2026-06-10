@@ -1,14 +1,12 @@
 # Conan Exiles Enhanced — bpkit Blueprint tooling
 
-Working dir for Giovanni's experiments driving the **Conan Exiles Enhanced Dev Kit** (UE 5.6.1)
+Working dir for experiments driving the **Conan Exiles Enhanced Dev Kit** (UE 5.6.1)
 from outside the editor. The engine install is *not* here; this repo holds only tooling/scripts/notes
 (git-able; never put kit source here). The framework is **bpkit** (engine-agnostic) — see `README.md`
 and `docs/` for depth; this file is the operational quick-reference.
 
-## Who / environment
-- **User:** Giovanni Petrantoni — GitHub `sinkingsugar` (id 7008900), email `g@hasten.gg`.
-  git on this box: `user.name=Giovanni Petrantoni`, `user.email=7008900+sinkingsugar@users.noreply.github.com`.
-- **Machine:** Windows 11 IoT Enterprise LTSC 2024. Keep the **Microsoft Store OFF**; prefer Win32 `.exe`/`.msi`
+## Environment
+- Windows 11. The **Microsoft Store is OFF** on this box; prefer Win32 `.exe`/`.msi`
   (sideloading MSIX from official GitHub releases via `Add-AppxPackage` is fine).
 - **Tooling** (full paths; a shell opened before install needs them): git `C:\Program Files\Git\cmd\git.exe`;
   winget (sideloaded MSIX); gh `C:\Program Files\GitHub CLI\gh.exe`.
@@ -52,9 +50,10 @@ Things that cost real time here:
   ModController as `[1]Invalid class`** (loads but never registers — runs in PIE, dead in the packaged
   game). This was the actual mounted-followers bug (2026-06-08). Confirm in the cook dialog that the BPs
   read **(Mod Asset)**. (full write-up: `docs/CONAN-NOTES.md` §Packaging.)
-- **A logic mod's ModController should also have "Requires Load On Startup" = true** in the Dev Kit mod
-  settings (→ `modinfo.json` `"bRequiresLoadOnStartup": true`) so it loads at boot. (We chased this
-  first — it was a red herring vs. the Base/Mod-asset issue above, but still correct to set.)
+- **"Requires Load On Startup" (`modinfo.json` `bRequiresLoadOnStartup`) is NOT needed** for a
+  ModController mod — empirically the controller registers fine without it (cooked game, 2026-06-10).
+  It was chased first during the packaging bringup and was a red herring both times; the real gate is
+  the (Mod Asset) placement above. Leave it at the default unless the mod truly needs boot-time loading.
 - **Verify a cooked pak — don't trust the cook silently.** Outer is a "fat" pak; UnrealPak is
   `C:\Program Files\Epic Games\CEUE5Devkit\Engine\Binaries\Win64\UnrealPak.exe`:
   `UnrealPak.exe <Mod>.pak -List` (shows `modinfo.json` + per-platform paks), extract, then
@@ -75,7 +74,7 @@ Things that cost real time here:
     crash + fix, read/write/edit flows, the typed-pin orphan trap, array/ForEach authoring, compile-flag caveats.
   - `docs/CONAN-NOTES.md` — live-verified Conan facts: mount seating is player-gated, `get_mount` broken
     (use `get_rider`), follower group caps, the ModController hook, MP/replication rules, **packaging/
-    shipping (the `bRequiresLoadOnStartup` gotcha, pak inspection, Shipping-safe diagnostics)**.
+    shipping (the (Mod Asset) rule, pak inspection, Shipping-safe diagnostics)**.
   - `docs/JOURNEY.md` — provenance (how the bridge + mod were reverse-engineered).
   - `mods/mounted-followers/FEASIBILITY.md` — the mounted-followers design audit + roadmap.
 

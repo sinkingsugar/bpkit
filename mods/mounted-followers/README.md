@@ -5,6 +5,10 @@ instead of sprinting on foot while you ride. Authored entirely from outside the
 editor with [`bpkit`](../../README.md) — compiled Blueprint logic, **no C++, no
 runtime Python**. Verified working in single-player and multiplayer (listen-server).
 
+A spiritual successor to the author's original **Mounted Followers for Skyrim**
+(Nexus Mods) — same itch, fifteen years and one engine later, this time built by
+an AI driving the dev kit. The Workshop blurb lives in [DESCRIPTION.txt](DESCRIPTION.txt).
+
 This is the reference **application** of the framework. The hard-won, live-verified
 Conan facts behind it are in [`docs/CONAN-NOTES.md`](../../docs/CONAN-NOTES.md); the
 full design audit + verdict is in [FEASIBILITY.md](FEASIBILITY.md).
@@ -48,7 +52,7 @@ The same steps run individually, via the editor's bundled Python (see the
 |---|---|
 | `00_recon.py` | read-only recon: player pawn, recipe APIs, the ModController hook, mount-state reads |
 | `01_recipe.py` | authors the cosmetic-mount `Stow`/`Restore` (attach + freeze + seated pose / reverse) on a scratch Actor BP |
-| `02_manager.py` | **canonical mod** — `BP_MountedFollowerManager : DreamworldMods.ModController` (MgrVersion 25, MP-ready). Has a built-in orphan + compile self-check (`BUILD OK`). |
+| `02_manager.py` | **canonical mod** — `BP_MountedFollowerManager : DreamworldMods.ModController` (MP-ready; version-stamped from `mf_config.MGR_VERSION`). Has a built-in orphan + compile self-check (`BUILD OK`). |
 | `02a_manager_minimal.py` | smallest teaching slice: a `BeginPlay` that just raises the `Mount` cap |
 | `restore_all.py` | recovery utility — un-stow / reset all followers if the mod misbehaves |
 
@@ -60,14 +64,24 @@ deterministic regression tests in [`tests/`](../../tests/): `test_array_nodes.py
 
 All mod metadata — the output content package, asset names, manager version, and the
 seated idle anim — lives in [`mf_config.py`](mf_config.py); the builders read from it,
-so changing `OUTPUT_PKG` moves the whole mod in one edit. It currently writes to
-`/Game/MountedFollowers` (writable sandbox content). For a shipping mod, point
-`OUTPUT_PKG` at your mod project's writable content root — note `/Game/Mods` is
-**read-only base content** in this kit (saves silently fail there).
+so changing `OUTPUT_PKG` moves the whole mod in one edit.
+
+`OUTPUT_PKG` **must** be the mod's own content root (`/Game/Mods/<ModName>`, writable
+when that mod is the *active* mod in the Dev Kit). Only assets there cook as
+**(Mod Asset)**; a ModController cooked from anywhere else is a **(Base Asset)** that
+loads but gets culled as `[1]Invalid class` in the packaged game — runs in PIE, dead
+in the real game. Full packaging checklist (cook dialog, pak verification with
+UnrealPak): [`docs/CONAN-NOTES.md`](../../docs/CONAN-NOTES.md) §Packaging.
 
 ## Status
 
-Working SP + MP. Remaining polish (see [FEASIBILITY.md §9](FEASIBILITY.md)): combat
-behavior (auto-dismount to fight vs. mounted), per-mount socket/pose tuning
-(camel/rhino), and persistence across relog. The native **formation system** is a
-backburnered v2 path for smoother group movement.
+**Shipping (experimental — feedback wanted, especially multiplayer/dedicated).**
+Working SP + MP (listen-server), verified in the **cooked/packaged game** — including the leash fix (v31/v32: Conan's follower catch-up AI re-enables a
+seated rider's movement; a per-tick server maintain pass re-pins it; cook-only repro).
+v33 is the release build: identical logic, all on-screen diagnostics stripped.
+
+Remaining polish (see [FEASIBILITY.md §9](FEASIBILITY.md)): combat behavior is an
+accepted limitation (dismount to fight — mounted AI combat is player-gated native),
+per-mount socket/pose tuning (camel/rhino), and persistence across relog (self-healing:
+a relog respawns clean). The native **formation system** is a backburnered v2 path for
+smoother group movement.

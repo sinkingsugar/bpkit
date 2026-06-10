@@ -1,9 +1,10 @@
-"""C2 manager build (evolving). BP_MountedFollowerManager : ModController.
+"""C2 manager build (canonical). BP_MountedFollowerManager : ModController.
 ReceiveTick:
-  - cast player (ConanCharacter); skip the tick if not ready
-  - Seq.0: init-guard -> raise 'Mount' cap once (Initialized bool)
-  - Seq.1: mount-transition detect -> print MOUNT / DISMOUNT (Step C hangs the
-    match+stow / restore here); track WasMounted bool
+  - non-gated cosmetic seat loop first (runs on EVERY instance: server + clients)
+  - then server-only (HasAuthority): cast player (ConanCharacter); skip if not ready
+  - Seq.0: init-guard -> raise the follower group caps once (Initialized bool)
+  - Seq.1: mount-transition detect (get_rider scan) -> stow / restore; then the
+    per-tick maintain pass re-pins seated riders (defeats the leash-AI re-enable)
 Run with Play STOPPED.  Run: python ue_run.py mods/mounted-followers/02_manager.py
 """
 import sys
@@ -25,9 +26,6 @@ TSC = "/Script/ConanSandbox.ThrallSystemComponent"
 GS = "/Script/Engine.GameplayStatics"
 KSL = "/Script/Engine.KismetSystemLibrary"
 KML = "/Script/Engine.KismetMathLibrary"
-KSTR = "/Script/Engine.KismetStringLibrary"
-KARR = "/Script/Engine.KismetArrayLibrary"
-KTL = "/Script/Engine.KismetTextLibrary"
 
 # edit in place (reuse if present) -- deleting+recreating leaves a stale redirector
 # that blocks recreate; the manager uses override EVENTS (not custom events) so
@@ -35,12 +33,11 @@ KTL = "/Script/Engine.KismetTextLibrary"
 bp_obj, _ = bp.scratch_blueprint(pkg=PKG, name=NAME, parent=unreal.ModController)
 print("manager BP:", FULL)
 boolt = unreal.BlueprintEditorLibrary.get_basic_type_by_name("bool")
-for vn in ("Initialized", "WasMounted", "ReportedFight"):
+for vn in ("Initialized", "WasMounted"):
     unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, vn, boolt)
 # build-version tag (CDO default set below) to detect which class actually spawns
 intt = unreal.BlueprintEditorLibrary.get_basic_type_by_name("int")
-for vn in ("MgrVersion", "DbgCount"):
-    unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, vn, intt)  # no-ops if exists
+unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, "MgrVersion", intt)  # no-ops if exists
 # C2 action state: SpareHorse (the mount we stow humanoids onto), SavedMeshXform (rider
 # mesh's relative-to-capsule xform saved at stow, restored at dismount so it doesn't float),
 # MountIdleAnim (the seated idle pose; CDO default set below). One SavedMeshXform var is fine
@@ -70,39 +67,9 @@ def cast_node(target, pos):
 def seq_node(pos):
     return g.node("K2Node_ExecutionSequence", [], base="Seq", pos=pos)
 
-def dbg(msg, pos):
-    """A PrintString of a literal; returns the node (wire exec in/out via execute/then)."""
-    p = g.call("PrintString", KSL, pos=pos)
-    g.typed_input(p, "InString", msg, "string")
-    return p
-
-def dbg_int(label, src_node, src_pin, pos):
-    """Print '<label><int>' by Conv_IntToString + Concat_StrStr -> PrintString."""
-    conv = g.call("Conv_IntToString", KSTR, pos=(pos[0], pos[1] + 140))
-    g.wire(src_node, src_pin, conv, "InInt", exec=False)
-    cat = g.call("Concat_StrStr", KSTR, pos=(pos[0], pos[1] + 280))
-    g.typed_input(cat, "A", label, "string")
-    g.wire(conv, "ReturnValue", cat, "B", exec=False)
-    p = g.call("PrintString", KSL, pos=pos)
-    g.wire(cat, "ReturnValue", p, "InString", exec=False)
-    return p
-
-# --- SHIPPING-SAFE on-screen messages. PrintString is compiled OUT of Shipping (the packaged
-# Conan client) AND this bug only repros there (never in PIE), so debug must use Conan's own HUD
-# funcs, which DO run in Shipping. HUDShowFIFO(Text) -> the LOCAL client's scrolling event feed;
-# WorldContextObject is left unwired so the compiler auto-supplies self (a valid world context).
-# Takes FText -> build it from a String via Conv_StringToText. (proven authoring, v26 / git 0d0187d) ---
-def txt_lit(s, pos):
-    c = g.call("Conv_StringToText", KTL, pos=pos)
-    g.typed_input(c, "InString", s, "string")
-    return c
-def fifo(txt_node, pos):
-    f = g.call("HUDShowFIFO", CONAN, pos=pos)
-    g.wire(txt_node, "ReturnValue", f, "Text", exec=False)
-    # HUDShowFIFO's WorldContextObject pin is AUTO-MANAGED: the compiler binds it to self (this
-    # manager Actor, a valid world context). Manual links to it are DROPPED on paste (verified:
-    # an authored wire reads back as 0 links), and the clean compile confirms the auto-bind took.
-    return f
+# (Debug-message helpers removed for release. If diagnostics are ever needed again: PrintString
+# is compiled OUT of Shipping; use ConanCharacter.HUDShowFIFO(FText) instead — see git history
+# (v26-v32) and docs/CONAN-NOTES.md §Packaging for the proven authoring pattern.)
 
 # --- C1 attach/restore node helpers (replicated; reuse the proven Stow/Restore pattern) ---
 CHAR = "/Script/Engine.Character"
@@ -408,14 +375,7 @@ g.wire(getTSC2, "ReturnValue", getFol, "self", exec=False)
 # clear SpareHorses + reset HumanoidCounter before (re)building the spare list each mount
 clrArr = arr_fn("Array_Clear", ir.obj_path(CONAN), (1900, 250))
 g.wire(arr_var("SpareHorses", ir.obj_path(CONAN), (1900, 470)), "SpareHorses", clrArr, "TargetArray", exec=False)
-# v32 diag (Shipping-safe): re-arm the once-per-ride "kept a rider seated" report + show a mount
-# banner so the COOKED game (the only place this bug repros) confirms mount-detect + the server
-# stow path actually ran. Fires once per mount; HUDShowFIFO survives Shipping (PrintString doesn't).
-setRF0 = g.var_set("ReportedFight", "bool", pos=(1650, 80)); setRF0.pin("ReportedFight").literal("false")
-g.wire(bMounted, "then", setRF0, "execute", exec=True)
-fifoMount = fifo(txt_lit("Mounted Followers v32: mounted -- stowing", (1650, -120)), (1900, -60))
-g.wire(setRF0, "then", fifoMount, "execute", exec=True)
-g.wire(fifoMount, "then", clrArr, "execute", exec=True)
+g.wire(bMounted, "then", clrArr, "execute", exec=True)
 setHC0 = g.var_set("HumanoidCounter", "int", pos=(2150, 250)); setHC0.pin("HumanoidCounter").literal("0")
 g.wire(clrArr, "then", setHC0, "execute", exec=True)
 
@@ -571,10 +531,6 @@ g.wire(seq2, "then_1", setWas, "execute", exec=True)
 # Server-authoritative (the leash runs server-side + movement replicates) so this one place fixes
 # SP + listen + dedicated; the per-client cosmetic loop is left alone. Chained off setWas.then so it
 # runs every tick AFTER the scan (PlayerMount/isMounted current).
-# DIAGNOSTIC (Shipping-safe + lean): a HUDShowFIFO "kept a rider seated" fires at most ONCE per ride
-# (ReportedFight, re-armed at stow) the first time we catch the AI having re-mobilized a seated rider
-# -- so a cooked-game run confirms the bug DID trigger and we held it, without flooding the feed. If
-# it stays in the saddle but you NEVER see that banner, the leash didn't fire this run.
 bMaint = g.branch(pos=(2900, 2400))
 g.wire(setWas, "then", bMaint, "execute", exec=True)
 g.wire(isMounted, "ReturnValue", bMaint, "Condition", exec=False)
@@ -599,26 +555,11 @@ g.wire(castParM, "then", bSeatedM, "execute", exec=True)
 g.wire(parMtblM, "ReturnValue", bSeatedM, "Condition", exec=False)
 # seated humanoid -> its movement comp
 rMoveM = comp_of(loopM, "Array Element", "CharacterMovement", (4150, 2580))
-# DIAGNOSTIC: had the AI re-mobilized it? (sample BEFORE re-pin) -> report ONCE per ride
-movingM = g.call("IsMovingOnGround", CMC, pos=(4150, 2750))
-g.wire(rMoveM, "CharacterMovement", movingM, "self", exec=False)
-bMovingM = g.branch(pos=(4150, 2350))
-g.wire(bSeatedM, "then", bMovingM, "execute", exec=True)
-g.wire(movingM, "ReturnValue", bMovingM, "Condition", exec=False)
-getRF = g.var_get("ReportedFight", "bool", pos=(4400, 2150))
-bReported = g.branch(pos=(4400, 2350))
-g.wire(bMovingM, "then", bReported, "execute", exec=True)
-g.wire(getRF, "ReportedFight", bReported, "Condition", exec=False)
-fifoFight = fifo(txt_lit("Mounted Followers v32: kept a rider seated", (4400, 1950)), (4650, 2050))
-g.wire(bReported, "else", fifoFight, "execute", exec=True)   # not yet reported this ride -> banner
-setRF1 = g.var_set("ReportedFight", "bool", pos=(4900, 2050)); setRF1.pin("ReportedFight").literal("true")
-g.wire(fifoFight, "then", setRF1, "execute", exec=True)
-# re-pin MOVE_None (all paths converge -> exec input takes multiple links)
-disableM = bare_call("DisableMovement", CMC, (5150, 2350))
+# re-pin MOVE_None every tick: idempotent when already frozen, and instantly undoes the
+# leash AI's re-enable the tick it happens (the rider never gets a frame to walk off).
+disableM = bare_call("DisableMovement", CMC, (4400, 2350))
 g.wire(rMoveM, "CharacterMovement", disableM, "self", exec=False)
-g.wire(setRF1, "then", disableM, "execute", exec=True)       # after the once-per-ride banner
-g.wire(bReported, "then", disableM, "execute", exec=True)    # already reported this ride
-g.wire(bMovingM, "else", disableM, "execute", exec=True)     # wasn't moving -> straight to re-pin
+g.wire(bSeatedM, "then", disableM, "execute", exec=True)
 # re-assert the saddle relative transform (defeats a teleport/recall drift, V2). Same constants the
 # stow used; relative to the attachrider socket it's still attached to, so re-setting re-glues it.
 setRelM = bare_call("K2_SetActorRelativeLocation", ACTOR, (5400, 2350))

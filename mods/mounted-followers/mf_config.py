@@ -45,7 +45,12 @@ RECIPE = "BP_MF_Recipe"                 # the Stow/Restore cosmetic-mount recipe
 #      Conan HUDShowFIFO, fired at most ONCE per ride -- a "mounted -- stowing" banner on mount and a
 #      "kept a rider seated" banner the first time the maintain pass catches the leash re-mobilizing a
 #      rider (ReportedFight bool, re-armed at stow). No per-tick spam. Strip both at final polish.
-MGR_VERSION = 32
+# 33 = RELEASE: all on-screen diagnostics stripped (the v32 mount banner + the once-per-ride
+#      "kept a rider seated" report and its ReportedFight/DbgCount bookkeeping vars). Logic is
+#      byte-for-byte the v32 behavior otherwise. NOTE an in-place rebuild leaves the old (now
+#      unused) ReportedFight/DbgCount vars on the existing BP -- harmless, but a fresh build
+#      (or manual var delete in the editor) yields the cleanest shipping asset.
+MGR_VERSION = 33
 
 # Seated idle pose played on a stowed rider (full object path).
 IDLE_ANIM = ("/Game/Characters/humans/animations/mounted/Horse/"

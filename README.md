@@ -21,6 +21,16 @@ READ:  GetAllGraphs -> UEdGraph::Nodes -> ExportNodesToText (per node) -> node t
 Verified live on UE 5.6.1 (Conan Exiles Enhanced Dev Kit): reads a full production
 blueprint (19 graphs, ~950 nodes, 2.8 MB) and authors/compiles new logic, editor stable.
 
+## Not just authoring — interrogate the game
+
+Reading is half the tool. Point Claude Code at any shipped Blueprint and just **ask
+how the game works** — "what gates mounting?", "where do follower caps live?",
+"what does this recipe actually spawn?" Claude dumps the graphs, follows the wires,
+and answers, turning the dev kit into a queryable knowledge base of the game's own
+logic. [`docs/CONAN-NOTES.md`](docs/CONAN-NOTES.md) is exactly that: live-verified
+facts about Conan's internals produced by interrogating its Blueprints — useful even
+if you never author a node.
+
 ## Engine-agnostic
 
 The `bpkit` core is generic. Install-specific paths live only in
@@ -36,8 +46,10 @@ The repo ships its own slash-commands in [`.claude/skills/`](.claude/skills/), p
 `bpkit` skill that **auto-loads** — so you can just *describe* a Blueprint task in
 plain language and have Claude drive the editor for you, no Python required.
 
-> **Editor prerequisite (any path):** launch the Dev Kit editor, then
-> *Project Settings → Plugins → Python → Enable Remote Execution*.
+> **Editor prerequisite (any path):** launch the editor and make sure the **Python
+> Editor Script Plugin** is enabled (*Edit → Plugins → search "Python"*; restart the
+> editor if you just enabled it — the Conan dev kit ships with it already on), then
+> *Project Settings → Plugins → Python → **Enable Remote Execution***.
 
 1. **Open this repo in Claude Code.**
 2. **`/setup`** — adaptive health check: verifies the remote-exec channel *and* that
@@ -120,3 +132,8 @@ tests need no editor: `& $py tests\test_offline.py`.
 This drives a managed Epic install; the engine/kit is **not** part of this repo.
 Nothing derived from the kit's `/Game` assets is committed (see `.gitignore`) —
 that content is Funcom's.
+
+## License
+
+[MIT](LICENSE). The bpkit framework and mod build scripts are original work; they
+contain no Funcom or Epic code or assets.

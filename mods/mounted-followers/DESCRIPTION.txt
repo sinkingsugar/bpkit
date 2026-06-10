@@ -1,0 +1,73 @@
+MOUNTED FOLLOWERS
+=================
+
+By Crom, why is your bodyguard JOGGING?
+
+You thunder across the Exiled Lands on your warhorse while your faithful
+thrall sprints behind you like a peasant chasing a runaway cart. Pathetic.
+You are a warlord. Warlords ride with a RETINUE.
+
+Mounted Followers puts every humanoid follower in a saddle of their own the
+moment you mount up. Your warband rides when you ride. Dismount, and they
+swing down beside you, ready to spill blood on foot.
+
+HOW IT WORKS
+- Bring your followers AND enough spare (tamed, following) horses.
+- Mount up. Every humanoid follower claims their own horse and saddles up.
+- Spare horses trail behind you in a staggered line - a column of riders,
+  not a horse-pile.
+- Dismount and the whole retinue dismounts with you.
+
+FEATURES
+- One horse per follower - no clown-stacking.
+- Raises your follower group caps (Mount, Warrior, Crafter, Bearer,
+  Performer, Archer: +5 each) so the warband actually fits.
+- Works in single-player AND multiplayer.
+- Pure logic mod: no map edits, no asset overrides, no replaced files.
+  Stacks peacefully with your other 40 mods.
+
+THE HONEST CORNER
+- Followers will not fight from the saddle - mounted combat is hardcoded
+  player-only in Conan's engine. Dismount to brawl; your crew unsaddles
+  with you. Working as intended: even Conan got off his horse to kill.
+- Riders hold a seated pose while mounted (they are passengers, not
+  jockeys). The horses do the running.
+- On relog everything respawns clean - worst case your thralls are
+  standing, not broken.
+
+EXPERIMENTAL - RIDE AT THE FRONT OF THE CHARGE
+This is an early release. It is tested in single-player and on a listen
+server, but the Exiled Lands are vast and server setups are many. PLEASE
+report what you find - especially multiplayer quirks (dedicated servers,
+high follower counts, mod conflicts): drop a comment here, or open an
+issue at https://github.com/sinkingsugar/bpkit. Every report makes the
+warband ride harder.
+
+A PEDIGREE OF SADDLES
+From the author of the ORIGINAL Mounted Followers for Skyrim (Nexus Mods,
+thousands of endorsements, back when shouting at dragons was novel). Some
+of us have spent fifteen years refusing to let followers walk.
+
+FORGED BY AN AI - YES, REALLY
+This mod's Blueprint logic was authored end-to-end by Claude (Anthropic's
+AI) driving the Conan Exiles Dev Kit from outside the editor, through
+bpkit - a free, open-source toolkit we built for exactly this. No C++, no
+runtime hacks, no injected DLLs: real compiled Blueprints, same as
+hand-made, reviewed and battle-tested by a human who has been modding
+since Skyrim was young.
+
+Want a mod that doesn't exist? With bpkit you can DESCRIBE it to an AI and
+watch it get built - node graphs, compiles and all. And even if you never
+build a thing, it is outrageously good for simply INTERROGATING the game:
+point the AI at the dev kit and ask how any mechanic actually works - it
+reads the game's own Blueprints and tells you. The forge is open to
+everyone, for Conan and (in principle) any UE5 content-only dev kit:
+
+https://github.com/sinkingsugar/bpkit
+
+The haters may sharpen their quills. The rest of us will be riding.
+
+No DLC required. Load order: anywhere sane.
+
+Now go. The steppe does not conquer itself, and your warband finally has
+the legs to keep up.

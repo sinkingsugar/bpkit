@@ -21,7 +21,7 @@ BUILD = ["01_recipe.py", "02_manager.py"]
 # but Conan culls it as "[1]Invalid class" and it never registers: works in PIE, dead in the
 # packaged game (the bug, fixed 2026-06-08). After /deploy, the cook dialog's "Select Content
 # For Mod" must show these as (Mod Asset). preview.uasset = Workshop thumbnail only (optional,
-# uncheck for local testing). Also set "Requires Load On Startup"=true for a ModController mod.
+# uncheck for local testing). "Requires Load On Startup" is NOT needed (verified 2026-06-10).
 # Verify a cooked pak: UnrealPak <Mod>.pak -List -> extract -> UnrealPak <Mod>-Windows.utoc -List.
 # Full write-up: docs/CONAN-NOTES.md  §Packaging.
 
