@@ -84,7 +84,11 @@ RECIPE = "BP_MF_Recipe"                 # the Stow/Restore cosmetic-mount recipe
 #      catches the leash AI re-mobilizing a seated rider, because the leash only repros in the
 #      COOKED game where PrintString doesn't exist. DEBUG adds a matching log line in PIE.
 #      Release deploy: DEBUG=False, HUD_DIAG to taste (recommended True).
-MGR_VERSION = 37
+# 38 = HUD_DIAG defaulted OFF (Giovanni: no player-visible diagnostics; the shipped mod is
+#      SILENT -- note a Shipping build logs NOTHING from BP, PrintString is a no-op there).
+#      Leash-catch detection restructured to author under DEBUG *or* HUD_DIAG so the PIE log
+#      line survives with the banner off. Release deploy: DEBUG=False too.
+MGR_VERSION = 38
 
 # Seated idle pose played on a stowed rider (full object path).
 IDLE_ANIM = ("/Game/Characters/humans/animations/mounted/Horse/"

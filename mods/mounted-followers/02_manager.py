@@ -32,14 +32,14 @@ KTL = "/Script/Engine.KismetTextLibrary"
 
 # === DIAGNOSTIC FLAGS (see README §Debugging) ===
 # DEBUG: PIE-only PrintString beacons at the one-shot beats (caps/stow/sweep/rescue + leash
-#   catch). On screen + log + `~` console. PrintString is compiled OUT of Shipping, so these
-#   never reach players -- but flip False for the release deploy to keep the graph lean.
-# HUD_DIAG: SHIP-VISIBLE HUDShowFIFO banner ("kept a rider seated", once per ride) when the
-#   maintain pass catches the leash AI re-mobilizing a seated rider. The leash bug only
-#   reproduces in the COOKED game where PrintString doesn't exist -- this is the one signal
-#   that survives there (the proven v26-v32 pattern).
+#   catch). On screen + log + `~` console. PrintString is compiled OUT of Shipping (screen,
+#   log AND console -- a shipped build logs NOTHING from BP), so these never reach players --
+#   but flip False for the release deploy to keep the graph lean.
+# HUD_DIAG: optional SHIP-VISIBLE HUDShowFIFO banner ("kept a rider seated", once per ride)
+#   when the maintain pass catches the leash AI re-mobilizing a seated rider -- the ONLY
+#   channel that survives Shipping (proven v26-v32). Default OFF: the shipped mod is silent.
 DEBUG = True
-HUD_DIAG = True
+HUD_DIAG = False
 
 # edit in place (reuse if present) -- deleting+recreating leaves a stale redirector
 # that blocks recreate; the manager uses override EVENTS (not custom events) so
@@ -70,8 +70,8 @@ for vn in ("SpareHorses", "OccupiedHorses", "ActiveSeats", "InitializedPlayers")
     unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, vn, conan_arr)
 anim_ref = unreal.BlueprintEditorLibrary.get_object_reference_type(unreal.AnimSequence.static_class())
 unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, "MountIdleAnim", anim_ref)
-if HUD_DIAG:
-    # once-per-ride latch for the "kept a rider seated" banner (re-armed while unmounted)
+if DEBUG or HUD_DIAG:
+    # once-per-ride latch for the leash-catch report (re-armed while unmounted)
     boolt = unreal.BlueprintEditorLibrary.get_basic_type_by_name("bool")
     unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, "ReportedCatch", boolt)
 ANIM = MOD.IDLE_ANIM
@@ -524,11 +524,13 @@ rMoveB = comp_of(loopB, "Array Element", "CharacterMovement", (3800, 2380))
 # MAINTAIN (seated): idempotent when already frozen; instantly undoes the leash AI's re-enable.
 disableM = bare_call("DisableMovement", CMC, (3850, 1500))
 g.wire(rMoveB, "CharacterMovement", disableM, "self", exec=False)
-if HUD_DIAG:
+if DEBUG or HUD_DIAG:
     # CATCH DETECTION: sample IsMovingOnGround BEFORE the re-pin -- true means the leash AI
     # actually re-mobilized this seated rider and the maintain pass is earning its keep.
-    # Report ONCE per ride (ReportedCatch, re-armed while the owner is on foot): a HUDShowFIFO
-    # banner (ship-visible -- the leash only repros COOKED) + a DEBUG PrintString for the log.
+    # Report ONCE per ride (ReportedCatch, re-armed while the owner is on foot). Reporters are
+    # flag-dependent: DEBUG -> PrintString (PIE-only; Shipping compiles it to a no-op -- a
+    # shipped build logs NOTHING from BP), HUD_DIAG -> HUDShowFIFO (the only ship-visible
+    # channel). Both flags off -> no detection nodes at all, just the bare re-pin.
     movingB = g.call("IsMovingOnGround", CMC, pos=(3850, 1300))
     g.wire(rMoveB, "CharacterMovement", movingB, "self", exec=False)
     bMovB = g.branch(pos=(4050, 1300))
@@ -538,18 +540,20 @@ if HUD_DIAG:
     bRC = g.branch(pos=(4300, 1300))
     g.wire(bMovB, "then", bRC, "execute", exec=True)
     g.wire(getRC, "ReportedCatch", bRC, "Condition", exec=False)
-    fifoCatch = fifo(txt_lit("Mounted Followers v%d: kept a rider seated" % MOD.MGR_VERSION,
-                             (4500, 1100)), (4700, 1150))
-    g.wire(bRC, "else", fifoCatch, "execute", exec=True)   # first catch this ride -> banner
-    catchTail = fifoCatch
+    catchTail, catchPin = bRC, "else"   # first catch this ride -> report chain
+    if HUD_DIAG:
+        fifoCatch = fifo(txt_lit("Mounted Followers v%d: kept a rider seated" % MOD.MGR_VERSION,
+                                 (4500, 1100)), (4700, 1150))
+        g.wire(catchTail, catchPin, fifoCatch, "execute", exec=True)
+        catchTail, catchPin = fifoCatch, "then"
     if DEBUG:
         dbgCatch = dbg("leash maintain caught a re-mobilized rider -- re-pinned", (4900, 1150))
-        g.wire(fifoCatch, "then", dbgCatch, "execute", exec=True)
-        catchTail = dbgCatch
+        g.wire(catchTail, catchPin, dbgCatch, "execute", exec=True)
+        catchTail, catchPin = dbgCatch, "then"
     setRC = g.var_set("ReportedCatch", "bool", pos=(5100, 1150)); setRC.pin("ReportedCatch").literal("true")
-    g.wire(catchTail, "then", setRC, "execute", exec=True)
+    g.wire(catchTail, catchPin, setRC, "execute", exec=True)
     # all paths converge on the re-pin (exec inputs merge)
-    g.wire(setRC, "then", disableM, "execute", exec=True)   # first catch, after the banner
+    g.wire(setRC, "then", disableM, "execute", exec=True)   # first catch, after the report
     g.wire(bRC, "then", disableM, "execute", exec=True)     # already reported this ride
     g.wire(bMovB, "else", disableM, "execute", exec=True)   # not moving -> routine re-pin
 else:
@@ -646,8 +650,8 @@ if DEBUG:
 loopDist = g.foreach(CONAN, pos=(2550, 3050))
 g.wire(getFolP, "ReturnValue", loopDist, "Array", exec=False)
 distEntry = (bMountedP, "else")
-if HUD_DIAG:
-    # re-arm the once-per-ride "kept a rider seated" banner while the owner is on foot
+if DEBUG or HUD_DIAG:
+    # re-arm the once-per-ride leash-catch report while the owner is on foot
     setRC0 = g.var_set("ReportedCatch", "bool", pos=(2350, 3050)); setRC0.pin("ReportedCatch").literal("false")
     g.wire(bMountedP, "else", setRC0, "execute", exec=True)
     distEntry = (setRC0, "then")

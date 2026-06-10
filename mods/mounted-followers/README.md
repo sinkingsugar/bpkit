@@ -90,11 +90,14 @@ Two flags at the top of [`02_manager.py`](02_manager.py) control built-in diagno
     cleanup).
   - `statue rescue (unfroze a stranded rider)` — only when a rider's horse died mid-ride.
   - `leash maintain caught a re-mobilized rider` — log copy of the HUD_DIAG catch below.
-- **`HUD_DIAG`** — a **ship-visible** `HUDShowFIFO` banner (*"kept a rider seated"*, once
-  per ride, re-armed while on foot) when the maintain pass catches Conan's leash AI
-  re-enabling a seated rider's movement. This one survives Shipping **by design**: the
-  leash bug only reproduces in the cooked game, where PrintString doesn't exist — this
-  banner is the only signal that the fix is earning its keep out there.
+- **`HUD_DIAG`** (default **off** — the shipped mod is silent) — an optional
+  **ship-visible** `HUDShowFIFO` banner (*"kept a rider seated"*, once per ride, re-armed
+  while on foot) when the maintain pass catches Conan's leash AI re-enabling a seated
+  rider's movement. Know this before reaching for console logging instead: **a Shipping
+  build logs NOTHING from Blueprint** — `PrintString` (screen + log + `~` console) is
+  compiled to a no-op there, so the HUD feed is the *only* channel that reaches a real
+  player. The leash bug also only reproduces in the cooked game, which is why this flag
+  exists at all; flip it on if you ever need field confirmation the fix is firing.
 
 Build-time self-checks printed by every deploy: orphaned-pin scan, unresolved-wildcard /
 error-marker scan, and the **authored-vs-pasted node-count guard** (paste silently drops
