@@ -67,7 +67,18 @@ RECIPE = "BP_MF_Recipe"                 # the Stow/Restore cosmetic-mount recipe
 #      - PERF: CDO tick_interval=0.1 (10 Hz polling instead of per-frame, ~6x cheaper).
 #      - BP_MF_Recipe dropped from the build/pak (vestigial since the manager inlined stow at
 #        v14; its mesh-attach pattern is the superseded pre-MP approach).
-MGR_VERSION = 34
+# 35 = v34 + PIE diagnostics: a DEBUG flag in the builder authors PrintString beacons at the
+#      one-shot beats (caps applied / stowed / sweep restore / statue rescue). PrintString is
+#      stripped from Shipping, but flip DEBUG=False and redeploy for the release cook anyway.
+# 36 = THE v34 per-player pass actually runs now. Root cause of "+5 caps broken": Pawn's
+#      GetPlayerState is NOT a UFUNCTION in this Conan build, and ImportNodesFromText SILENTLY
+#      DROPS unresolvable CallFunction nodes (no orphan, NO compile error; IsValid then read an
+#      unwired null pin = false) -- so the player gate never passed and the whole per-player
+#      pass (caps/stow/restore) was dead code. Same dropped node had made the cosmetic loop's
+#      player exclusion a no-op since v30 (harmless by luck). Fix: IsPlayerControlled (reflected
+#      in this build; both gated passes are server-side where it's accurate) in all 3 spots, and
+#      a new authored-vs-pasted node-count guard in the build self-check (the only tell).
+MGR_VERSION = 36
 
 # Seated idle pose played on a stowed rider (full object path).
 IDLE_ANIM = ("/Game/Characters/humans/animations/mounted/Horse/"

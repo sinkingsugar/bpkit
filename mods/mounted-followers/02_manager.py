@@ -66,9 +66,19 @@ def cast_node(target, pos):
     return g.node("K2Node_DynamicCast",
                   ['TargetType="/Script/CoreUObject.Class\'%s\'"' % target], base="DynamicCast", pos=pos)
 
-# (Debug-message helpers removed for release. If diagnostics are ever needed again: PrintString
-# is compiled OUT of Shipping; use ConanCharacter.HUDShowFIFO(FText) instead — see git history
-# (v26-v32) and docs/CONAN-NOTES.md §Packaging for the proven authoring pattern.)
+# --- PIE DIAGNOSTICS (v35). DEBUG=True authors PrintString beacons at every ONE-SHOT beat
+# (caps applied / rider stowed / sweep restore / statue rescue) -- on screen AND the log, so
+# they read in the `~` console too. No per-tick spots are instrumented (level-triggered logic
+# would spam 10/s). PrintString is compiled OUT of Shipping, so even a DEBUG build never shows
+# players anything -- but set False for the release deploy anyway to keep the graph lean.
+# (For SHIPPING-visible diagnostics use ConanCharacter.HUDShowFIFO(FText) -- see git history
+# v26-v32 and docs/CONAN-NOTES.md §Packaging.)
+DEBUG = True
+def dbg(msg, pos):
+    """A PrintString of a literal; wire exec in/out via execute/then. Only call under DEBUG."""
+    p = g.call("PrintString", KSL, pos=pos)
+    g.typed_input(p, "InString", msg, "string")
+    return p
 
 # --- C1 attach/restore node helpers (replicated; reuse the proven Stow/Restore pattern) ---
 CHAR = "/Script/Engine.Character"
@@ -217,12 +227,14 @@ meshMC = comp_of(castMC, "AsConan Character", "Mesh", (1300, -1450))
 amMC = bare_call("SetAnimationMode", SMC, (1300, -1300))
 set_default(amMC, "InAnimationMode", "AnimationSingleNode", "byte", enum="EAnimationMode")
 g.wire(meshMC, "Mesh", amMC, "self", exec=False)
-# EXCLUDE THE PLAYER: a player pawn has a valid PlayerState on every instance (replicates), unlike
-# IsPlayerControlled. (Players aren't actor-attached when mounted so they rarely hit this, but safe.)
-getPSMC = g.call("GetPlayerState", "/Script/Engine.Pawn", pos=(1050, -1550))
-g.wire(castMC, "AsConan Character", getPSMC, "self", exec=False)
-isPlayerMC = g.call("IsValid", KSL, pos=(1180, -1550))
-g.wire(getPSMC, "ReturnValue", isPlayerMC, "Object", exec=False)
+# EXCLUDE THE PLAYER. Historically authored as GetPlayerState+IsValid ("replicates, unlike
+# IsPlayerControlled") -- but GetPlayerState is NOT a UFUNCTION in this build and the paste
+# SILENTLY DROPPED it since v30: the exclusion has always been a no-op at runtime (harmless,
+# because a riding player isn't actor-attached to a mountable parent here). IsPlayerControlled
+# DOES resolve; on clients it only covers the local player, which is strictly better than the
+# nothing we actually had.
+isPlayerMC = g.call("IsPlayerControlled", "/Script/Engine.Pawn", pos=(1100, -1550))
+g.wire(castMC, "AsConan Character", isPlayerMC, "self", exec=False)
 bPlayerMC = g.branch(pos=(1280, -1300))
 g.wire(bAttMC, "then", bPlayerMC, "execute", exec=True)
 g.wire(isPlayerMC, "ReturnValue", bPlayerMC, "Condition", exec=False)
@@ -300,10 +312,13 @@ g.wire(clrActive, "then", loopPS, "Exec", exec=True)
 castP = cast_node(CONAN, (500, 200))
 g.wire(loopPS, "Array Element", castP, "Object", exec=False)
 g.wire(loopPS, "LoopBody", castP, "execute", exec=True)
-getPSP = g.call("GetPlayerState", "/Script/Engine.Pawn", pos=(500, 400))
-g.wire(castP, "AsConan Character", getPSP, "self", exec=False)
-isPl = g.call("IsValid", KSL, pos=(700, 400))
-g.wire(getPSP, "ReturnValue", isPl, "Object", exec=False)
+# PLAYER GATE: IsPlayerControlled -- server-accurate, and this pass is HasAuthority-gated.
+# Do NOT use GetPlayerState here: it is not a UFUNCTION in this Conan build, and the paste
+# SILENTLY DROPS unresolvable CallFunction nodes (no orphan, no compile error -- IsValid then
+# reads an unwired pin = null = false), which killed the whole per-player pass in v34/v35.
+# Caught 2026-06-10 via live PIE probe + the authored-vs-pasted count check at the bottom.
+isPl = g.call("IsPlayerControlled", "/Script/Engine.Pawn", pos=(600, 400))
+g.wire(castP, "AsConan Character", isPl, "self", exec=False)
 bIsPl = g.branch(pos=(750, 200))
 g.wire(castP, "then", bIsPl, "execute", exec=True)
 g.wire(isPl, "ReturnValue", bIsPl, "Condition", exec=False)
@@ -338,11 +353,16 @@ g.wire(arr_var("InitializedPlayers", ir.obj_path(CONAN), (1450 + 6 * 260, -180))
 arr_item_pin(addInit, "NewItem", ir.obj_path(CONAN))
 g.wire(P[0], P[1], addInit, "NewItem", exec=False)
 g.wire(prev, prev_pin, addInit, "execute", exec=True)
+initTail = addInit
+if DEBUG:
+    dbgInit = dbg("MF v35: +5 follower caps applied (new player)", (1450 + 7 * 260, 0))
+    g.wire(addInit, "then", dbgInit, "execute", exec=True)
+    initTail = dbgInit
 
 # --- mount detect: scan THIS player's following horses for GetRider()==P ---
 clrPM = var_set_m("PlayerMount", (1250, 550))   # null (value pin left unconnected)
 g.wire(bInitP, "then", clrPM, "execute", exec=True)      # already initialized
-g.wire(addInit, "then", clrPM, "execute", exec=True)     # just initialized (exec inputs merge)
+g.wire(initTail, "then", clrPM, "execute", exec=True)    # just initialized (exec inputs merge)
 loopDet = g.foreach(CONAN, pos=(1500, 550))
 g.wire(getFolP, "ReturnValue", loopDet, "Array", exec=False)
 g.wire(clrPM, "then", loopDet, "Exec", exec=True)
@@ -560,6 +580,8 @@ addHC = g.call("Add_IntInt", KML, pos=(6000, 2000)); g.wire(hcGet2, "HumanoidCou
 g.typed_input(addHC, "B", "1", "int")
 setHC = g.var_set("HumanoidCounter", "int", pos=(6000, 1850)); g.wire(addHC, "ReturnValue", setHC, "HumanoidCounter", exec=False)
 chain.then(setHC)
+if DEBUG:
+    chain.then(dbg("MF v35: stowed a rider onto a spare horse", (6250, 1850)))
 
 # NOT MOUNTED housekeeping pass over the followers. Horses: reset the staggered follow
 # distance (the stagger otherwise outlives the ride). Humanoids: STATUE RESCUE -- if a horse
@@ -616,6 +638,9 @@ colD0 = bare_call("SetActorEnableCollision", ACTOR, (4050, 3050))
 set_default(colD0, "bNewActorEnableCollision", "true", "bool")
 g.wire(loopDist, "Array Element", colD0, "self", exec=False)
 g.wire(walkD0, "then", colD0, "execute", exec=True)
+if DEBUG:
+    dbgResc = dbg("MF v35: statue rescue (unfroze a stranded rider)", (4300, 3050))
+    g.wire(colD0, "then", dbgResc, "execute", exec=True)
 
 # === GLOBAL RESTORE SWEEP (after the player loop): any humanoid still seated on a horse NO
 # mounted player legitimized this tick (ActiveSeats) gets restored. ONE restore path covers
@@ -630,10 +655,11 @@ g.wire(loopPS, "Completed", loopG, "Exec", exec=True)
 castG = cast_node(CONAN, (500, 3700))
 g.wire(loopG, "Array Element", castG, "Object", exec=False)
 g.wire(loopG, "LoopBody", castG, "execute", exec=True)
-getPSG = g.call("GetPlayerState", "/Script/Engine.Pawn", pos=(500, 3900))
-g.wire(castG, "AsConan Character", getPSG, "self", exec=False)
-isPlG = g.call("IsValid", KSL, pos=(700, 3900))
-g.wire(getPSG, "ReturnValue", isPlG, "Object", exec=False)
+# player exclusion: IsPlayerControlled (server-side sweep -> accurate). NOT GetPlayerState --
+# see the gate note above: that node silently vanishes on paste in this build, and an
+# always-false exclusion HERE would let the sweep force-dismount a riding player.
+isPlG = g.call("IsPlayerControlled", "/Script/Engine.Pawn", pos=(600, 3900))
+g.wire(castG, "AsConan Character", isPlG, "self", exec=False)
 bIsPlG = g.branch(pos=(750, 3700))
 g.wire(castG, "then", bIsPlG, "execute", exec=True)
 g.wire(isPlG, "ReturnValue", bIsPlG, "Condition", exec=False)
@@ -677,11 +703,24 @@ colG = bare_call("SetActorEnableCollision", ACTOR, (3000, 3700))
 set_default(colG, "bNewActorEnableCollision", "true", "bool")
 g.wire(castG, "AsConan Character", colG, "self", exec=False)
 chainG.then(colG)
+if DEBUG:
+    chainG.then(dbg("MF v35: sweep-restored a rider (dismount/orphan)", (3250, 3700)))
 
 text = g.render()
+n_authored = text.count("Begin Object Class=")
 bp_ptr, graph_ptr = bp.find_graph(FULL, "EventGraph")
 print("cleared:", bp.clear_graph(bp_ptr, graph_ptr))
-print("inject:", bp.inject(FULL, text, graph_name="EventGraph"))
+res = bp.inject(FULL, text, graph_name="EventGraph")
+print("inject:", res)
+# PASTE-DROP GUARD: ImportNodesFromText SILENTLY DISCARDS nodes whose function ref doesn't
+# resolve on this build (no orphan, no compile error -- downstream pins just lose their links;
+# this is how GetPlayerState vanished in v34/v35 and killed the per-player pass). authored !=
+# pasted is the only tell.
+dropped = n_authored - (res.get("pasted") or 0)
+if dropped:
+    print("!! PASTE DROPPED %d NODE(S): authored %d, pasted %d -- a function ref didn't"
+          " resolve on this build. Diff the render against the readback to find it." %
+          (dropped, n_authored, res.get("pasted")))
 
 # stamp the build version on the CDO so we can tell which class actually spawns
 # (read instance.MgrVersion to detect a cached old class)
@@ -735,4 +774,5 @@ for blk in re.split(r'(?=Begin Object Class=)', txt):
 print("COMPILE PROBLEMS:", len(problems))
 for p in problems:
     print("  !!", p)
-print("BUILD OK" if not problems and not orphans else "BUILD HAS ISSUES -- DO NOT PLAY YET")
+print("BUILD OK" if not problems and not orphans and not dropped
+      else "BUILD HAS ISSUES -- DO NOT PLAY YET")

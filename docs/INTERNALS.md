@@ -200,6 +200,17 @@ What bites:
   Verify by scanning the exported graph for `wildcard` pins (excluding ForEach
   macros) + `ErrorMsg`/`bHasCompilerMessage` markers, or read the log for
   "undetermined" / "[Compiler] Error" (`dev`-era `c1_errors.py` pattern).
+- **Paste silently DROPS nodes whose function ref doesn't resolve on this build.**
+  `ImportNodesFromText` discards an authored `K2Node_CallFunction` whose
+  `FunctionReference` names a function that isn't a UFUNCTION here — **no orphan,
+  no compile error**; downstream pins just lose their links (an `IsValid` fed by
+  the dropped node reads an unwired null pin → false forever). Wire-level scans
+  cannot catch a node that isn't there. The **only tell is the count**: compare
+  `render().count("Begin Object Class=")` to inject's `pasted` and fail the build
+  on mismatch. (Cost a dead release build: `Pawn.GetPlayerState` is a UPROPERTY
+  but **not** a UFUNCTION in Conan's 5.6 — every authored GetPlayerState node had
+  silently vanished; the fix was `IsPlayerControlled`, which does reflect. When
+  unsure a function exists, probe `hasattr(obj, "snake_case_name")` live first.)
 
 See [CONAN-NOTES.md](CONAN-NOTES.md) for the engine/game-specific node patterns
 discovered while building the mounted-followers mod, and [JOURNEY.md](JOURNEY.md)
