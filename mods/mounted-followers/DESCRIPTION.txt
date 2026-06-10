@@ -34,10 +34,10 @@ THE HONEST CORNER
   jockeys). The horses do the running.
 - On relog everything respawns clean - worst case your thralls are
   standing, not broken.
-- Multiplayer today tracks ONE rider: the first player (the host, on a
-  co-op/listen server). Everyone SEES the mounted warband, but only the
-  host's retinue saddles up. Every-player support is top of the roadmap -
-  reports from dedicated servers especially welcome.
+- Multiplayer: EVERY player's retinue rides - each player is tracked
+  server-side, and a rider whose owner logs out mid-ride is calmly put
+  back on their feet. Listen servers are the tested path; dedicated-server
+  reports are especially welcome.
 
 EXPERIMENTAL - RIDE AT THE FRONT OF THE CHARGE
 This is an early release. It is tested in single-player and on a listen

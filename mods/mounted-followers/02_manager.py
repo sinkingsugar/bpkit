@@ -1,10 +1,12 @@
 """C2 manager build (canonical). BP_MountedFollowerManager : ModController.
 ReceiveTick:
   - non-gated cosmetic seat loop first (runs on EVERY instance: server + clients)
-  - then server-only (HasAuthority): cast player (ConanCharacter); skip if not ready
-  - Seq.0: init-guard -> raise the follower group caps once (Initialized bool)
-  - Seq.1: mount-transition detect (get_rider scan) -> stow / restore; then the
-    per-tick maintain pass re-pins seated riders (defeats the leash-AI re-enable)
+  - then server-only (HasAuthority), PER PLAYER (v34): for every player pawn --
+    raise the follower group caps once; detect mount state (get_rider scan over
+    that player's followers); mounted -> stow unseated humanoids onto spare
+    horses + per-tick maintain the seated ones (defeats the leash-AI re-enable);
+    unmounted -> restore the seated ones. Level-triggered + idempotent: no
+    transition state, so a follower whistled mid-ride saddles up too.
 Run with Play STOPPED.  Run: python ue_run.py mods/mounted-followers/02_manager.py
 """
 import sys
@@ -32,28 +34,28 @@ KML = "/Script/Engine.KismetMathLibrary"
 # clear+reinject is safe (no collision-rename).
 bp_obj, _ = bp.scratch_blueprint(pkg=PKG, name=NAME, parent=unreal.ModController)
 print("manager BP:", FULL)
-boolt = unreal.BlueprintEditorLibrary.get_basic_type_by_name("bool")
-for vn in ("Initialized", "WasMounted"):
-    unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, vn, boolt)
 # build-version tag (CDO default set below) to detect which class actually spawns
 intt = unreal.BlueprintEditorLibrary.get_basic_type_by_name("int")
-unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, "MgrVersion", intt)  # no-ops if exists
-# C2 action state: SpareHorse (the mount we stow humanoids onto), SavedMeshXform (rider
-# mesh's relative-to-capsule xform saved at stow, restored at dismount so it doesn't float),
-# MountIdleAnim (the seated idle pose; CDO default set below). One SavedMeshXform var is fine
-# for one humanoid follower; per-rider state is a C3/multi-follower polish item.
+for vn in ("MgrVersion", "HumanoidCounter"):
+    unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, vn, intt)  # no-ops if exists
 conan_ref = unreal.BlueprintEditorLibrary.get_object_reference_type(unreal.ConanCharacter.static_class())
-unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, "SpareHorse", conan_ref)
-# PlayerMount: the horse the player is riding (found by get_rider scan; null when on foot).
-# Reliable mount detector -- GetMountInput lags/flakes across mount cycles.
+# PlayerMount: per-player-iteration SCRATCH -- the horse the CURRENT player is riding (found by
+# get_rider scan; null when on foot). Safe as a member var because the player ForEach body runs
+# to completion per element. (GetMountInput lags/flakes across mount cycles -- get_rider is the
+# stable ground truth.)
 unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, "PlayerMount", conan_ref)
-# C3: distinct horse per follower -> a list of unridden spare horses, indexed by a humanoid
-# counter (humanoid #i -> SpareHorses[i]); index-alignment guarantees no two share a horse.
-unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, "SpareHorses",
-    unreal.BlueprintEditorLibrary.get_array_type(conan_ref))
-unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, "HumanoidCounter", intt)
-xform_t = unreal.BlueprintEditorLibrary.get_struct_type(unreal.Transform.static_struct())
-unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, "SavedMeshXform", xform_t)
+# Scratch arrays. Per-player-iteration: SpareHorses = the unridden, unoccupied follower horses
+# (humanoid #i -> SpareHorses[i]; index-alignment guarantees no two share a horse);
+# OccupiedHorses = horses already carrying a seated humanoid (so re-stows can't double-book a
+# horse across ticks). Per-TICK: ActiveSeats = every horse a MOUNTED player legitimized this
+# tick (its occupied horses + horses stowed onto this tick) -- the global restore sweep frees
+# any seated humanoid whose horse is NOT in it. Persistent: InitializedPlayers = player pawns
+# whose group caps were already raised (the adjustment is ADDITIVE -- it must fire once per
+# pawn, never per tick; a relogged player is a NEW pawn -> re-applied once, same net effect as
+# the old per-boot init).
+conan_arr = unreal.BlueprintEditorLibrary.get_array_type(conan_ref)
+for vn in ("SpareHorses", "OccupiedHorses", "ActiveSeats", "InitializedPlayers"):
+    unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, vn, conan_arr)
 anim_ref = unreal.BlueprintEditorLibrary.get_object_reference_type(unreal.AnimSequence.static_class())
 unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, "MountIdleAnim", anim_ref)
 ANIM = MOD.IDLE_ANIM
@@ -63,9 +65,6 @@ g = ir.Graph("EventGraph")
 def cast_node(target, pos):
     return g.node("K2Node_DynamicCast",
                   ['TargetType="/Script/CoreUObject.Class\'%s\'"' % target], base="DynamicCast", pos=pos)
-
-def seq_node(pos):
-    return g.node("K2Node_ExecutionSequence", [], base="Seq", pos=pos)
 
 # (Debug-message helpers removed for release. If diagnostics are ever needed again: PrintString
 # is compiled OUT of Shipping; use ConanCharacter.HUDShowFIFO(FText) instead — see git history
@@ -78,9 +77,9 @@ SCENE = "/Script/Engine.SceneComponent"
 CMC = "/Script/Engine.CharacterMovementComponent"
 ACTOR = "/Script/Engine.Actor"
 CLS = {"Mesh": SMC, "CharacterMovement": CMC,
-       "CapsuleComponent": "/Script/Engine.CapsuleComponent", "SpareHorse": CONAN,
+       "CapsuleComponent": "/Script/Engine.CapsuleComponent",
        "PlayerMount": CONAN, "MountIdleAnim": "/Script/Engine.AnimSequence"}
-STRUCTS = {"SavedMeshXform": "/Script/CoreUObject.Transform"}
+STRUCTS = {}
 ENUM = {
     "EAttachmentRule": "/Script/CoreUObject.Enum'/Script/Engine.EAttachmentRule'",
     "EAnimationMode":  "/Script/CoreUObject.Enum'/Script/Engine.EAnimationMode'",
@@ -170,6 +169,10 @@ def arr_fn(member, elem_sub, pos):
 def arr_var(name, elem_sub, pos):
     n = g.var_get(name, "object", elem_sub, pos=pos)
     n.pin(name).set("PinType.ContainerType", "Array"); return n
+def arr_item_pin(node, pin_name, elem_sub):
+    """Type a CallArrayFunction's element pin (NewItem / ItemToFind) to match TargetArray."""
+    p = node.pin(pin_name); p.dir = "EGPD_Input"; _stype(p, "object", elem_sub)
+    return p
 def get_item(arr_node, arr_pin, idx_node, idx_pin, elem_sub, pos):
     n = g.node("K2Node_GetArrayItem", ["bReturnByRefDesired=False"], base="GetItem", pos=pos)
     ap = n.pin("Array"); ap.dir = "EGPD_Input"; _stype(ap, "object", elem_sub, "Array")
@@ -190,13 +193,6 @@ def get_all_actors(cls_path, pos):
     # runtime ActorClass default still filters to cls_path, so contents are cls_path instances.
     op = n.pin("OutActors"); op.dir = "EGPD_Output"
     _stype(op, "object", "/Script/CoreUObject.Class'/Script/Engine.Actor'", "Array")
-    return n
-def mc_event(name, pos):
-    """A NetMulticast (reliable) custom event. FunctionFlags 201474240 = the exact value a real
-    Multicast event uses (from BP_BatDemonGlider's MulticastFlapUpwards in the dumps)."""
-    n = g.node("K2Node_CustomEvent",
-               ['CustomFunctionName="%s"' % name, "FunctionFlags=201474240"], base="CustomEvent", pos=pos)
-    tp = n.pin("then"); tp.dir = "EGPD_Output"; tp.set("PinType.PinCategory", '"exec"')
     return n
 
 # === COSMETIC SEAT loop -- driven NON-GATED from ReceiveTick below, so it runs on EVERY instance
@@ -282,296 +278,405 @@ tick = g.event("ReceiveTick")
 haz = g.call("HasAuthority", ACTOR, pos=(-250, 0))
 bAuth = g.branch(pos=(-50, 0))
 g.wire(tick, "then", gaC, "execute", exec=True)            # NON-GATED cosmetic seat loop (every instance)
-g.wire(loopMC, "Completed", bAuth, "execute", exec=True)   # THEN the server-gated stow/gameplay
+g.wire(loopMC, "Completed", bAuth, "execute", exec=True)   # THEN the server-gated per-player pass
 g.wire(haz, "ReturnValue", bAuth, "Condition", exec=False)
-getP = g.call("GetPlayerCharacter", GS, pos=(0, 350))
-g.typed_input(getP, "PlayerIndex", "0", "int")
-cast = cast_node(CONAN, (250, 0))
-g.wire(bAuth, "then", cast, "execute", exec=True)   # server only
-g.wire(getP, "ReturnValue", cast, "Object", exec=False)
-PLAYER = (cast, "AsConan Character")   # the casted player ConanCharacter output
 
-seq = seq_node((550, 0))
-g.wire(cast, "then", seq, "execute", exec=True)
+# === v34 PER-PLAYER PASS (the host-only fix). GetPlayerCharacter(0) served exactly one player;
+# now EVERY player pawn gets the full treatment. Player pawns are found by re-walking the SAME
+# GetAllActorsOfClass result the cosmetic loop consumed: a player pawn is a ConanCharacter with
+# a valid PlayerState (the proven discriminator from the cosmetic loop -- no new node kinds).
+# Stow/restore is LEVEL-TRIGGERED and idempotent instead of transition-edge-triggered: per tick,
+# per mounted player, every UNSEATED humanoid follower is stowed (one-shot by construction: the
+# seated-check gates it) and every SEATED one gets the v31/v32 leash maintain; per unmounted
+# player, every seated follower is restored (one-shot: after the restore it is no longer seated,
+# so the v28 every-tick-AnimBP-reinit catastrophe cannot recur). This retires WasMounted/the
+# transition machinery -- and a follower whistled mid-ride now saddles up too. ===
+clrActive = arr_fn("Array_Clear", ir.obj_path(CONAN), (50, 350))
+g.wire(arr_var("ActiveSeats", ir.obj_path(CONAN), (50, 550)), "ActiveSeats", clrActive, "TargetArray", exec=False)
+g.wire(bAuth, "then", clrActive, "execute", exec=True)   # per-tick: reset the legit-seat set
+loopPS = g.foreach(ACTOR, pos=(250, 200))
+g.wire(gaC, "OutActors", loopPS, "Array", exec=False)
+g.wire(clrActive, "then", loopPS, "Exec", exec=True)
+castP = cast_node(CONAN, (500, 200))
+g.wire(loopPS, "Array Element", castP, "Object", exec=False)
+g.wire(loopPS, "LoopBody", castP, "execute", exec=True)
+getPSP = g.call("GetPlayerState", "/Script/Engine.Pawn", pos=(500, 400))
+g.wire(castP, "AsConan Character", getPSP, "self", exec=False)
+isPl = g.call("IsValid", KSL, pos=(700, 400))
+g.wire(getPSP, "ReturnValue", isPl, "Object", exec=False)
+bIsPl = g.branch(pos=(750, 200))
+g.wire(castP, "then", bIsPl, "execute", exec=True)
+g.wire(isPl, "ReturnValue", bIsPl, "Condition", exec=False)
+P = (castP, "AsConan Character")   # this iteration's player ConanCharacter
 
-# --- Seq.0: init-guard -> raise Mount cap once ---
-getInit = g.var_get("Initialized", "bool", pos=(750, 250))
-bInit = g.branch(pos=(950, 0))
-g.wire(seq, "then_0", bInit, "execute", exec=True)
-g.wire(getInit, "Initialized", bInit, "Condition", exec=False)
-getTSC = g.call("GetThrallSystemComponent", CONAN, pos=(1150, 250))
-g.wire(PLAYER[0], PLAYER[1], getTSC, "self", exec=False)
-addAdj = g.call("AddThrallGroupLimitAdjustment", TSC, pos=(1350, 0))
-g.typed_input(addAdj, "Group", "Mount", "name")
-g.typed_input(addAdj, "Amount", "5", "int")
-g.wire(getTSC, "ReturnValue", addAdj, "self", exec=False)
-g.wire(bInit, "else", addAdj, "execute", exec=True)
-# ALSO raise EVERY humanoid-follower group cap -- thralls live in Warrior/Crafter/Bearer/
-# Performer/Archer by type (MP showed a Crafter capped at 1). Additive/mod-safe; chained.
-prev = addAdj
-for gi, grp in enumerate(("Warrior", "Crafter", "Bearer", "Performer", "Archer")):
-    a = g.call("AddThrallGroupLimitAdjustment", TSC, pos=(1600 + gi * 260, 0))
+# this player's followers (pure calls -> data-only fan-out to every loop below re-evaluates
+# against the CURRENT P wire, the proven v32 pattern)
+getTSCp = g.call("GetThrallSystemComponent", CONAN, pos=(750, 550))
+g.wire(P[0], P[1], getTSCp, "self", exec=False)
+getFolP = g.call("GetFollowingThrallCharacters", TSC, pos=(1000, 550))
+g.wire(getTSCp, "ReturnValue", getFolP, "self", exec=False)
+
+# --- init: raise every follower group cap ONCE per player pawn (additive adjustment -- per-tick
+# re-fire would stack forever, hence the InitializedPlayers guard) ---
+hasInit = arr_fn("Array_Contains", ir.obj_path(CONAN), (950, 0))
+g.wire(arr_var("InitializedPlayers", ir.obj_path(CONAN), (950, -180)), "InitializedPlayers", hasInit, "TargetArray", exec=False)
+arr_item_pin(hasInit, "ItemToFind", ir.obj_path(CONAN))
+g.wire(P[0], P[1], hasInit, "ItemToFind", exec=False)
+bInitP = g.branch(pos=(1200, 200))
+g.wire(bIsPl, "then", bInitP, "execute", exec=True)
+g.wire(hasInit, "ReturnValue", bInitP, "Condition", exec=False)
+prev, prev_pin = bInitP, "else"   # not yet initialized -> raise the caps
+for gi, grp in enumerate(("Mount", "Warrior", "Crafter", "Bearer", "Performer", "Archer")):
+    a = g.call("AddThrallGroupLimitAdjustment", TSC, pos=(1450 + gi * 260, 0))
     g.typed_input(a, "Group", grp, "name")
     g.typed_input(a, "Amount", "5", "int")
-    g.wire(getTSC, "ReturnValue", a, "self", exec=False)
-    g.wire(prev, "then", a, "execute", exec=True)
-    prev = a
-setInit = g.var_set("Initialized", "bool", pos=(1600 + 5 * 260, 0))
-setInit.pin("Initialized").literal("true")
-g.wire(prev, "then", setInit, "execute", exec=True)
+    g.wire(getTSCp, "ReturnValue", a, "self", exec=False)
+    g.wire(prev, prev_pin, a, "execute", exec=True)
+    prev, prev_pin = a, "then"
+addInit = arr_fn("Array_Add", ir.obj_path(CONAN), (1450 + 6 * 260, 0))
+g.wire(arr_var("InitializedPlayers", ir.obj_path(CONAN), (1450 + 6 * 260, -180)), "InitializedPlayers", addInit, "TargetArray", exec=False)
+arr_item_pin(addInit, "NewItem", ir.obj_path(CONAN))
+g.wire(P[0], P[1], addInit, "NewItem", exec=False)
+g.wire(prev, prev_pin, addInit, "execute", exec=True)
 
-# --- Seq.1: mount-transition detect via GET_RIDER SCAN (reliable across cycles) ---
-# GetMountInput lags/flakes -- its BP_MountInput object is torn down + recreated each mount
-# cycle, so IsValid reads false for a long window on remount (stow fired "after a lot of
-# time"). get_rider on the mount is the stable ground truth. Each tick: scan the following
-# horses; if one has the player as rider -> that's PlayerMount and we're mounted.
-seq2 = seq_node((900, 500))
-g.wire(seq, "then_1", seq2, "execute", exec=True)
-
-getTSCd = g.call("GetThrallSystemComponent", CONAN, pos=(700, 700))
-g.wire(PLAYER[0], PLAYER[1], getTSCd, "self", exec=False)
-getFolD = g.call("GetFollowingThrallCharacters", TSC, pos=(900, 700))
-g.wire(getTSCd, "ReturnValue", getFolD, "self", exec=False)
-clrPM = var_set_m("PlayerMount", (1100, 500))   # null (value pin left unconnected)
-g.wire(seq2, "then_0", clrPM, "execute", exec=True)
-loopDet = g.foreach(CONAN, pos=(1300, 650))
-g.wire(getFolD, "ReturnValue", loopDet, "Array", exec=False)
+# --- mount detect: scan THIS player's following horses for GetRider()==P ---
+clrPM = var_set_m("PlayerMount", (1250, 550))   # null (value pin left unconnected)
+g.wire(bInitP, "then", clrPM, "execute", exec=True)      # already initialized
+g.wire(addInit, "then", clrPM, "execute", exec=True)     # just initialized (exec inputs merge)
+loopDet = g.foreach(CONAN, pos=(1500, 550))
+g.wire(getFolP, "ReturnValue", loopDet, "Array", exec=False)
 g.wire(clrPM, "then", loopDet, "Exec", exec=True)
-getRiderDet = g.call("GetRider", CONAN, pos=(1550, 900))
+getRiderDet = g.call("GetRider", CONAN, pos=(1750, 800))
 g.wire(loopDet, "Array Element", getRiderDet, "self", exec=False)
-eqDet = g.call("EqualEqual_ObjectObject", KML, pos=(1750, 900))
+eqDet = g.call("EqualEqual_ObjectObject", KML, pos=(1950, 800))
 g.wire(getRiderDet, "ReturnValue", eqDet, "A", exec=False)
-g.wire(PLAYER[0], PLAYER[1], eqDet, "B", exec=False)
-bRiderDet = g.branch(pos=(1550, 650))
+g.wire(P[0], P[1], eqDet, "B", exec=False)
+bRiderDet = g.branch(pos=(1750, 550))
 g.wire(loopDet, "LoopBody", bRiderDet, "execute", exec=True)
 g.wire(eqDet, "ReturnValue", bRiderDet, "Condition", exec=False)
-setPM = var_set_m("PlayerMount", (1800, 650))
+setPM = var_set_m("PlayerMount", (2000, 550))
 g.wire(loopDet, "Array Element", setPM, "PlayerMount", exec=False)
-g.wire(bRiderDet, "then", setPM, "execute", exec=True)   # this horse's rider == player -> our mount
+g.wire(bRiderDet, "then", setPM, "execute", exec=True)   # this horse's rider == P -> P's mount
 
-# isMounted = IsValid(PlayerMount); transition fires after the scan completes
-getPM = var_self("PlayerMount", (1300, 1000))
-isMounted = g.call("IsValid", KSL, pos=(1550, 1100))
+getPM = var_self("PlayerMount", (2050, 800))
+isMounted = g.call("IsValid", KSL, pos=(2250, 850))
 g.wire(getPM, "PlayerMount", isMounted, "Object", exec=False)
-getWas = g.var_get("WasMounted", "bool", pos=(1550, 1250))
-neq = g.call("NotEqual_BoolBool", KML, pos=(1800, 1150))
-g.wire(isMounted, "ReturnValue", neq, "A", exec=False)
-g.wire(getWas, "WasMounted", neq, "B", exec=False)
-bChanged = g.branch(pos=(2050, 650))
-g.wire(loopDet, "Completed", bChanged, "execute", exec=True)
-g.wire(neq, "ReturnValue", bChanged, "Condition", exec=False)
-bMounted = g.branch(pos=(2300, 650))
-g.wire(bChanged, "then", bMounted, "execute", exec=True)
-g.wire(isMounted, "ReturnValue", bMounted, "Condition", exec=False)
-# MOUNT branch -- the real action (2-pass over followers):
-#   Pass A: collect unridden spare horses -> SpareHorses[] (stagger each one's follow distance)
-#   Pass B: stow each humanoid onto SpareHorses[counter] (C1 attach chain)
-# shared follower source for both passes (one impure get fans out to both loops)
-getTSC2 = g.call("GetThrallSystemComponent", CONAN, pos=(1850, 420))
-g.wire(PLAYER[0], PLAYER[1], getTSC2, "self", exec=False)
-getFol = g.call("GetFollowingThrallCharacters", TSC, pos=(2100, 420))
-g.wire(getTSC2, "ReturnValue", getFol, "self", exec=False)
+bMountedP = g.branch(pos=(2300, 550))
+g.wire(loopDet, "Completed", bMountedP, "execute", exec=True)
+g.wire(isMounted, "ReturnValue", bMountedP, "Condition", exec=False)
 
-# clear SpareHorses + reset HumanoidCounter before (re)building the spare list each mount
-clrArr = arr_fn("Array_Clear", ir.obj_path(CONAN), (1900, 250))
-g.wire(arr_var("SpareHorses", ir.obj_path(CONAN), (1900, 470)), "SpareHorses", clrArr, "TargetArray", exec=False)
-g.wire(bMounted, "then", clrArr, "execute", exec=True)
-setHC0 = g.var_set("HumanoidCounter", "int", pos=(2150, 250)); setHC0.pin("HumanoidCounter").literal("0")
+# === MOUNTED: three passes over this player's followers. ===
+# Pass O: collect horses ALREADY carrying a seated humanoid, so the spare pool can't
+# double-book a horse on later ticks (a stowed rider doesn't register as the horse's "rider",
+# so GetRider can't exclude these).
+clrOcc = arr_fn("Array_Clear", ir.obj_path(CONAN), (2550, 300))
+g.wire(arr_var("OccupiedHorses", ir.obj_path(CONAN), (2550, 520)), "OccupiedHorses", clrOcc, "TargetArray", exec=False)
+g.wire(bMountedP, "then", clrOcc, "execute", exec=True)
+loopO = g.foreach(CONAN, pos=(2800, 300))
+g.wire(getFolP, "ReturnValue", loopO, "Array", exec=False)
+g.wire(clrOcc, "then", loopO, "Exec", exec=True)
+mtblO = g.call("IsMountable", CONAN, pos=(3050, 530))
+g.wire(loopO, "Array Element", mtblO, "self", exec=False)
+bMtblO = g.branch(pos=(3050, 300))
+g.wire(loopO, "LoopBody", bMtblO, "execute", exec=True)
+g.wire(mtblO, "ReturnValue", bMtblO, "Condition", exec=False)
+getParO = g.call("GetAttachParentActor", ACTOR, pos=(3300, 530))
+g.wire(loopO, "Array Element", getParO, "self", exec=False)
+castParO = cast_node(CONAN, (3300, 300))
+g.wire(getParO, "ReturnValue", castParO, "Object", exec=False)
+g.wire(bMtblO, "else", castParO, "execute", exec=True)   # humanoid -> who carries it? (cast-fail = nobody)
+parMtblO = g.call("IsMountable", CONAN, pos=(3550, 530))
+g.wire(castParO, "AsConan Character", parMtblO, "self", exec=False)
+bSeatO = g.branch(pos=(3550, 300))
+g.wire(castParO, "then", bSeatO, "execute", exec=True)
+g.wire(parMtblO, "ReturnValue", bSeatO, "Condition", exec=False)
+addOcc = arr_fn("Array_Add", ir.obj_path(CONAN), (3800, 300))
+g.wire(arr_var("OccupiedHorses", ir.obj_path(CONAN), (3800, 520)), "OccupiedHorses", addOcc, "TargetArray", exec=False)
+arr_item_pin(addOcc, "NewItem", ir.obj_path(CONAN))
+g.wire(castParO, "AsConan Character", addOcc, "NewItem", exec=False)
+g.wire(bSeatO, "then", addOcc, "execute", exec=True)
+addActO = arr_fn("Array_Add", ir.obj_path(CONAN), (4050, 300))   # this seat is legit (owner is mounted)
+g.wire(arr_var("ActiveSeats", ir.obj_path(CONAN), (4050, 520)), "ActiveSeats", addActO, "TargetArray", exec=False)
+arr_item_pin(addActO, "NewItem", ir.obj_path(CONAN))
+g.wire(castParO, "AsConan Character", addActO, "NewItem", exec=False)
+g.wire(addOcc, "then", addActO, "execute", exec=True)
+
+# Pass A: build the spare pool -- mountable, unridden (excludes P's own mount), unoccupied.
+clrArr = arr_fn("Array_Clear", ir.obj_path(CONAN), (2550, 950))
+g.wire(arr_var("SpareHorses", ir.obj_path(CONAN), (2550, 1170)), "SpareHorses", clrArr, "TargetArray", exec=False)
+g.wire(loopO, "Completed", clrArr, "execute", exec=True)
+setHC0 = g.var_set("HumanoidCounter", "int", pos=(2800, 950)); setHC0.pin("HumanoidCounter").literal("0")
 g.wire(clrArr, "then", setHC0, "execute", exec=True)
-
-# PASS A: collect every UNRIDDEN mountable follower into SpareHorses[]
-loopA = g.foreach(CONAN, pos=(2400, 250))
-g.wire(getFol, "ReturnValue", loopA, "Array", exec=False)
+loopA = g.foreach(CONAN, pos=(3050, 950))
+g.wire(getFolP, "ReturnValue", loopA, "Array", exec=False)
 g.wire(setHC0, "then", loopA, "Exec", exec=True)
-mtblA = g.call("IsMountable", CONAN, pos=(2650, 480))
+mtblA = g.call("IsMountable", CONAN, pos=(3300, 1180))
 g.wire(loopA, "Array Element", mtblA, "self", exec=False)
-bMtblA = g.branch(pos=(2650, 250))
+bMtblA = g.branch(pos=(3300, 950))
 g.wire(loopA, "LoopBody", bMtblA, "execute", exec=True)
 g.wire(mtblA, "ReturnValue", bMtblA, "Condition", exec=False)
-# EXCLUDE the horse the player is riding: a spare horse has NO rider (GetRider invalid).
-getRiderA = g.call("GetRider", CONAN, pos=(2900, 480))
+getRiderA = g.call("GetRider", CONAN, pos=(3550, 1180))
 g.wire(loopA, "Array Element", getRiderA, "self", exec=False)
-ridValA = g.call("IsValid", KSL, pos=(3100, 480))
+ridValA = g.call("IsValid", KSL, pos=(3750, 1180))
 g.wire(getRiderA, "ReturnValue", ridValA, "Object", exec=False)
-bRiddenA = g.branch(pos=(2950, 250))
+bRiddenA = g.branch(pos=(3600, 950))
 g.wire(bMtblA, "then", bRiddenA, "execute", exec=True)
 g.wire(ridValA, "ReturnValue", bRiddenA, "Condition", exec=False)
-addSpare = arr_fn("Array_Add", ir.obj_path(CONAN), (3200, 250))
-g.wire(arr_var("SpareHorses", ir.obj_path(CONAN), (3200, 480)), "SpareHorses", addSpare, "TargetArray", exec=False)
-niA = addSpare.pin("NewItem"); niA.dir = "EGPD_Input"; _stype(niA, "object", ir.obj_path(CONAN))
+occA = arr_fn("Array_Contains", ir.obj_path(CONAN), (3850, 1180))
+g.wire(arr_var("OccupiedHorses", ir.obj_path(CONAN), (3850, 1400)), "OccupiedHorses", occA, "TargetArray", exec=False)
+arr_item_pin(occA, "ItemToFind", ir.obj_path(CONAN))
+g.wire(loopA, "Array Element", occA, "ItemToFind", exec=False)
+bOccA = g.branch(pos=(3900, 950))
+g.wire(bRiddenA, "else", bOccA, "execute", exec=True)    # unridden -> already carrying a thrall?
+g.wire(occA, "ReturnValue", bOccA, "Condition", exec=False)
+addSpare = arr_fn("Array_Add", ir.obj_path(CONAN), (4150, 950))
+g.wire(arr_var("SpareHorses", ir.obj_path(CONAN), (4150, 1170)), "SpareHorses", addSpare, "TargetArray", exec=False)
+arr_item_pin(addSpare, "NewItem", ir.obj_path(CONAN))
 g.wire(loopA, "Array Element", addSpare, "NewItem", exec=False)
-g.wire(bRiddenA, "else", addSpare, "execute", exec=True)   # mountable AND unridden -> add to SpareHorses
+g.wire(bOccA, "else", addSpare, "execute", exec=True)    # free horse -> spare pool
 # SPACING: stagger this horse's follow distance by its loop index (index*180) so the horses
 # trail in a line behind the player instead of all clustering on one follow point.
-idxMul = g.call("Multiply_IntInt", KML, pos=(3450, 480))
+idxMul = g.call("Multiply_IntInt", KML, pos=(4400, 1180))
 g.wire(loopA, "Array Index", idxMul, "A", exec=False)
 g.typed_input(idxMul, "B", "180", "int")
-idxF = g.call("Conv_IntToDouble", KML, pos=(3650, 480))
+idxF = g.call("Conv_IntToDouble", KML, pos=(4600, 1180))
 g.wire(idxMul, "ReturnValue", idxF, "InInt", exec=False)
-setDist = g.call("SetAdditionalFollowDistance", CONAN, pos=(3450, 250))
+setDist = g.call("SetAdditionalFollowDistance", CONAN, pos=(4400, 950))
 g.wire(loopA, "Array Element", setDist, "self", exec=False)
 g.wire(idxF, "ReturnValue", setDist, "NewFollowDistance", exec=False)
 g.wire(addSpare, "then", setDist, "execute", exec=True)
 
-# PASS B: stow each NON-mountable (humanoid) follower onto SpareHorses[counter]
-loopB = g.foreach(CONAN, pos=(2400, 750))
-g.wire(getFol, "ReturnValue", loopB, "Array", exec=False)
+# Pass B: every humanoid follower. SEATED (attach parent is a mountable horse) -> the per-tick
+# MAINTAIN (the v31/v32 leash fix: Conan's follower catch-up AI re-enables a seated rider's
+# movement after a while -- cooked-game-only repro -- and CharacterMovement walks the still-
+# attached pawn to the ground; re-pin MOVE_None + re-assert the saddle xform every tick, so the
+# re-enable never survives a frame). UNSEATED -> STOW onto SpareHorses[HumanoidCounter]
+# (one-shot by construction: next tick it is seated and lands in the maintain branch).
+loopB = g.foreach(CONAN, pos=(2550, 1700))
+g.wire(getFolP, "ReturnValue", loopB, "Array", exec=False)
 g.wire(loopA, "Completed", loopB, "Exec", exec=True)
-mtblB = g.call("IsMountable", CONAN, pos=(2650, 980))
+mtblB = g.call("IsMountable", CONAN, pos=(2800, 1930))
 g.wire(loopB, "Array Element", mtblB, "self", exec=False)
-bMtblB = g.branch(pos=(2650, 750))
+bMtblB = g.branch(pos=(2800, 1700))
 g.wire(loopB, "LoopBody", bMtblB, "execute", exec=True)
 g.wire(mtblB, "ReturnValue", bMtblB, "Condition", exec=False)
-# claim SpareHorses[HumanoidCounter]; only stow if that index actually holds a horse
-hcGet = g.var_get("HumanoidCounter", "int", pos=(2900, 980))
-arrGetB = arr_var("SpareHorses", ir.obj_path(CONAN), (2900, 1150))
-horse = get_item(arrGetB, "SpareHorses", hcGet, "HumanoidCounter", ir.obj_path(CONAN), (3150, 1050))
-# GUARD: counter < len(SpareHorses). (IsValid on the GetArrayItem Output pin won't merge via
-# paste -- the bare Object pin doesn't take the special node's output type -- so use an in-range
-# int test instead; GetArrayItem.Output still feeds the mesh getter, which DID connect.)
-lenB = arr_fn("Array_Length", ir.obj_path(CONAN), (3150, 820))
-g.wire(arr_var("SpareHorses", ir.obj_path(CONAN), (3150, 1000)), "SpareHorses", lenB, "TargetArray", exec=False)
-lessB = g.call("Less_IntInt", KML, pos=(3350, 820))
+# seated? = attached AND the attach parent casts to a mountable ConanCharacter
+getParB = g.call("GetAttachParentActor", ACTOR, pos=(3050, 1930))
+g.wire(loopB, "Array Element", getParB, "self", exec=False)
+parVB = g.call("IsValid", KSL, pos=(3250, 1930))
+g.wire(getParB, "ReturnValue", parVB, "Object", exec=False)
+bParVB = g.branch(pos=(3050, 1700))
+g.wire(bMtblB, "else", bParVB, "execute", exec=True)     # humanoid
+g.wire(parVB, "ReturnValue", bParVB, "Condition", exec=False)
+castParB = cast_node(CONAN, (3300, 1700))
+g.wire(getParB, "ReturnValue", castParB, "Object", exec=False)
+g.wire(bParVB, "then", castParB, "execute", exec=True)   # attached -> to whom?
+parMtblB = g.call("IsMountable", CONAN, pos=(3550, 1930))
+g.wire(castParB, "AsConan Character", parMtblB, "self", exec=False)
+bSeatB = g.branch(pos=(3550, 1700))                       # (CastFailed = attached to a placeable
+g.wire(castParB, "then", bSeatB, "execute", exec=True)    #  bench/wheel -> leave it exactly alone)
+g.wire(parMtblB, "ReturnValue", bSeatB, "Condition", exec=False)
+
+rMeshB = comp_of(loopB, "Array Element", "Mesh", (3800, 2200))
+rMoveB = comp_of(loopB, "Array Element", "CharacterMovement", (3800, 2380))
+
+# MAINTAIN (seated): idempotent when already frozen; instantly undoes the leash AI's re-enable.
+disableM = bare_call("DisableMovement", CMC, (3850, 1500))
+g.wire(rMoveB, "CharacterMovement", disableM, "self", exec=False)
+g.wire(bSeatB, "then", disableM, "execute", exec=True)
+setRelM = bare_call("K2_SetActorRelativeLocation", ACTOR, (4100, 1500))
+relpM = setRelM.pin("NewRelativeLocation"); relpM.dir = "EGPD_Input"
+type_struct(relpM, "/Script/CoreUObject.Vector"); relpM.set("DefaultValue", '"0.000000,0.000000,90.000000"')
+g.wire(loopB, "Array Element", setRelM, "self", exec=False)
+g.wire(disableM, "then", setRelM, "execute", exec=True)
+setRotM = bare_call("K2_SetActorRelativeRotation", ACTOR, (4350, 1500))
+rotpM = setRotM.pin("NewRelativeRotation"); rotpM.dir = "EGPD_Input"
+type_struct(rotpM, "/Script/CoreUObject.Rotator"); rotpM.set("DefaultValue", '"0.000000,90.000000,0.000000"')
+g.wire(loopB, "Array Element", setRotM, "self", exec=False)
+g.wire(setRelM, "then", setRotM, "execute", exec=True)
+
+# STOW (unseated): claim SpareHorses[HumanoidCounter]; only if the counter is in range
+# ("not enough horses" leaves the extras walking, by design). GUARD is an int-range test --
+# IsValid won't merge onto a GetArrayItem.Output pin via paste (v32 lesson).
+hcGet = g.var_get("HumanoidCounter", "int", pos=(3800, 2560))
+arrGetB = arr_var("SpareHorses", ir.obj_path(CONAN), (3800, 2730))
+horse = get_item(arrGetB, "SpareHorses", hcGet, "HumanoidCounter", ir.obj_path(CONAN), (4050, 2630))
+lenB = arr_fn("Array_Length", ir.obj_path(CONAN), (4050, 2400))
+g.wire(arr_var("SpareHorses", ir.obj_path(CONAN), (4050, 2580)), "SpareHorses", lenB, "TargetArray", exec=False)
+lessB = g.call("Less_IntInt", KML, pos=(4250, 2400))
 g.wire(hcGet, "HumanoidCounter", lessB, "A", exec=False)
 g.wire(lenB, "ReturnValue", lessB, "B", exec=False)
-bHasHorse = g.branch(pos=(2950, 750))
-g.wire(bMtblB, "else", bHasHorse, "execute", exec=True)   # NOT mountable -> humanoid
+bHasHorse = g.branch(pos=(3950, 1850))
+g.wire(bParVB, "else", bHasHorse, "execute", exec=True)  # unattached humanoid -> stow
+g.wire(bSeatB, "else", bHasHorse, "execute", exec=True)  # attached to a non-horse ConanCharacter (odd) -> treat as unseated
 g.wire(lessB, "ReturnValue", bHasHorse, "Condition", exec=False)
-# bHasHorse.then -> stow chain (counter in range -> this humanoid gets its OWN spare horse)
-
-mMesh = comp_of(horse, "Output", "Mesh", (3550, 1150))   # spare horse mesh = attach parent
-rMesh = comp_of(loopB, "Array Element", "Mesh", (3550, 950))   # rider mesh (for the seated pose)
-rMove = comp_of(loopB, "Array Element", "CharacterMovement", (3550, 1350))
+mMesh = comp_of(horse, "Output", "Mesh", (4300, 2630))   # spare horse mesh = attach parent
 chain = Chain(bHasHorse, "then")
 # ACTOR-attach the follower to the saddle -- actor attachment REPLICATES to clients
 # (mesh/component attachment did not, which is what desynced MP).
-attach = actor_attach((3850, 750), "attachrider")
+attach = actor_attach((4250, 1850), "attachrider")
 g.wire(loopB, "Array Element", attach, "self", exec=False)   # the follower ACTOR
 g.wire(mMesh, "Mesh", attach, "Parent", exec=False)
 chain.then(attach)
+# legitimize this seat immediately, or the same tick's global sweep would un-stow it
+addActSt = arr_fn("Array_Add", ir.obj_path(CONAN), (4500, 2100))
+g.wire(arr_var("ActiveSeats", ir.obj_path(CONAN), (4500, 2300)), "ActiveSeats", addActSt, "TargetArray", exec=False)
+arr_item_pin(addActSt, "NewItem", ir.obj_path(CONAN))
+g.wire(horse, "Output", addActSt, "NewItem", exec=False)
+chain.then(addActSt)
 # raise the body onto the saddle (root capsule snaps ~90 below the mesh)
-setRel = bare_call("K2_SetActorRelativeLocation", ACTOR, (4100, 750))
+setRel = bare_call("K2_SetActorRelativeLocation", ACTOR, (4500, 1850))
 relp = setRel.pin("NewRelativeLocation"); relp.dir = "EGPD_Input"
 type_struct(relp, "/Script/CoreUObject.Vector"); relp.set("DefaultValue", '"0.000000,0.000000,90.000000"')
 g.wire(loopB, "Array Element", setRel, "self", exec=False)
 chain.then(setRel)
 # correct the ~90deg yaw the 'attachrider' socket snaps to (relative rotation replicates with the
 # attach). If it ends up flipped, swap -90 -> 90.
-setRot = bare_call("K2_SetActorRelativeRotation", ACTOR, (4100, 950))
+setRot = bare_call("K2_SetActorRelativeRotation", ACTOR, (4750, 1850))
 rotp = setRot.pin("NewRelativeRotation"); rotp.dir = "EGPD_Input"
 type_struct(rotp, "/Script/CoreUObject.Rotator"); rotp.set("DefaultValue", '"0.000000,90.000000,0.000000"')
 g.wire(loopB, "Array Element", setRot, "self", exec=False)
 chain.then(setRot)
-disable = bare_call("DisableMovement", CMC, (4350, 750))
-g.wire(rMove, "CharacterMovement", disable, "self", exec=False)
+disable = bare_call("DisableMovement", CMC, (5000, 1850))
+g.wire(rMoveB, "CharacterMovement", disable, "self", exec=False)
 chain.then(disable)
-nocol = bare_call("SetActorEnableCollision", ACTOR, (4600, 750))
+nocol = bare_call("SetActorEnableCollision", ACTOR, (5250, 1850))
 set_default(nocol, "bNewActorEnableCollision", "false", "bool")
 g.wire(loopB, "Array Element", nocol, "self", exec=False)
 chain.then(nocol)
-amode = bare_call("SetAnimationMode", SMC, (4850, 750))
+amode = bare_call("SetAnimationMode", SMC, (5500, 1850))
 set_default(amode, "InAnimationMode", "AnimationSingleNode", "byte", enum="EAnimationMode")
-g.wire(rMesh, "Mesh", amode, "self", exec=False)
+g.wire(rMeshB, "Mesh", amode, "self", exec=False)
 chain.then(amode)
-play = bare_call("PlayAnimation", SMC, (5100, 750))
+play = bare_call("PlayAnimation", SMC, (5750, 1850))
 set_default(play, "bLooping", "true", "bool")
-animGet = var_self("MountIdleAnim", (4850, 1000))
+animGet = var_self("MountIdleAnim", (5500, 2100))
 g.wire(animGet, "MountIdleAnim", play, "NewAnimToPlay", exec=False)
-g.wire(rMesh, "Mesh", play, "self", exec=False)
+g.wire(rMeshB, "Mesh", play, "self", exec=False)
 chain.then(play)
 # advance the counter so the NEXT humanoid takes the NEXT spare horse -> distinct mounts
-hcGet2 = g.var_get("HumanoidCounter", "int", pos=(5300, 1000))
-addHC = g.call("Add_IntInt", KML, pos=(5300, 900)); g.wire(hcGet2, "HumanoidCounter", addHC, "A", exec=False)
+hcGet2 = g.var_get("HumanoidCounter", "int", pos=(6000, 2100))
+addHC = g.call("Add_IntInt", KML, pos=(6000, 2000)); g.wire(hcGet2, "HumanoidCounter", addHC, "A", exec=False)
 g.typed_input(addHC, "B", "1", "int")
-setHC = g.var_set("HumanoidCounter", "int", pos=(5300, 750)); g.wire(addHC, "ReturnValue", setHC, "HumanoidCounter", exec=False)
+setHC = g.var_set("HumanoidCounter", "int", pos=(6000, 1850)); g.wire(addHC, "ReturnValue", setHC, "HumanoidCounter", exec=False)
 chain.then(setHC)
 
-# DISMOUNT branch: restore each humanoid follower (reverse of stow) -- replicates C1 build_restore
-loopD = g.foreach(CONAN, pos=(2100, 1700))
-g.wire(getFol, "ReturnValue", loopD, "Array", exec=False)
-g.wire(bMounted, "else", loopD, "Exec", exec=True)
-mtblD = g.call("IsMountable", CONAN, pos=(2350, 1930))
-g.wire(loopD, "Array Element", mtblD, "self", exec=False)
-bMtblD = g.branch(pos=(2350, 1700))
-g.wire(loopD, "LoopBody", bMtblD, "execute", exec=True)
-g.wire(mtblD, "ReturnValue", bMtblD, "Condition", exec=False)
-rMeshD = comp_of(loopD, "Array Element", "Mesh", (2650, 1900))
-rMoveD = comp_of(loopD, "Array Element", "CharacterMovement", (2650, 2100))
-chainD = Chain(bMtblD, "else")   # NOT mountable -> humanoid -> restore
-detachD = actor_detach((2900, 1900))   # ACTOR-detach from the horse (replicates), keep world xform
-g.wire(loopD, "Array Element", detachD, "self", exec=False)
-chainD.then(detachD)
-amodeD = bare_call("SetAnimationMode", SMC, (3150, 1700))
-set_default(amodeD, "InAnimationMode", "AnimationBlueprint", "byte", enum="EAnimationMode")
-g.wire(rMeshD, "Mesh", amodeD, "self", exec=False)
-chainD.then(amodeD)
-walkD = bare_call("SetMovementMode", CMC, (3400, 1700))
-set_default(walkD, "NewMovementMode", "MOVE_Walking", "byte", enum="EMovementMode")
-g.wire(rMoveD, "CharacterMovement", walkD, "self", exec=False)
-chainD.then(walkD)
-colD = bare_call("SetActorEnableCollision", ACTOR, (3650, 1700))
-set_default(colD, "bNewActorEnableCollision", "true", "bool")
-g.wire(loopD, "Array Element", colD, "self", exec=False)
-chainD.then(colD)
+# NOT MOUNTED housekeeping pass over the followers. Horses: reset the staggered follow
+# distance (the stagger otherwise outlives the ride). Humanoids: STATUE RESCUE -- if a horse
+# died mid-ride its rider auto-detached but kept our stow freeze (MOVE_None, no collision);
+# while the owner stayed mounted the stow pass re-seats it, but once the owner is on foot
+# nothing else would unfreeze it (the global sweep below only handles SEATED bodies). So an
+# unattached humanoid follower stuck in MOVE_None gets movement + collision back here. (The
+# anim reset is the cosmetic loop's job -- its force=false AnimBP call is a no-op unless the
+# char is genuinely stuck in SingleNode.) Restoring SEATED riders is NOT done per-player --
+# the global sweep covers it (and the cases a follower-list walk can't: followers that LEFT
+# the list mid-ride, owners who logged out while mounted).
+loopDist = g.foreach(CONAN, pos=(2550, 3050))
+g.wire(getFolP, "ReturnValue", loopDist, "Array", exec=False)
+g.wire(bMountedP, "else", loopDist, "Exec", exec=True)
+mtblD0 = g.call("IsMountable", CONAN, pos=(2800, 3280))
+g.wire(loopDist, "Array Element", mtblD0, "self", exec=False)
+bMtblD0 = g.branch(pos=(2800, 3050))
+g.wire(loopDist, "LoopBody", bMtblD0, "execute", exec=True)
+g.wire(mtblD0, "ReturnValue", bMtblD0, "Condition", exec=False)
+convD0 = g.call("Conv_IntToDouble", KML, pos=(3050, 3280))
+g.typed_input(convD0, "InInt", "0", "int")
+setDist0 = g.call("SetAdditionalFollowDistance", CONAN, pos=(3050, 3050))
+g.wire(loopDist, "Array Element", setDist0, "self", exec=False)
+g.wire(convD0, "ReturnValue", setDist0, "NewFollowDistance", exec=False)
+g.wire(bMtblD0, "then", setDist0, "execute", exec=True)
+# humanoid -> unattached AND frozen (MOVE_None)? -> give it movement + collision back
+getParD0 = g.call("GetAttachParentActor", ACTOR, pos=(3050, 3450))
+g.wire(loopDist, "Array Element", getParD0, "self", exec=False)
+parVD0 = g.call("IsValid", KSL, pos=(3250, 3450))
+g.wire(getParD0, "ReturnValue", parVD0, "Object", exec=False)
+bParVD0 = g.branch(pos=(3300, 3050))
+g.wire(bMtblD0, "else", bParVD0, "execute", exec=True)
+g.wire(parVD0, "ReturnValue", bParVD0, "Condition", exec=False)
+rMoveD0 = comp_of(loopDist, "Array Element", "CharacterMovement", (3300, 3280))
+# MovementMode is a byte(EMovementMode) property on the movement comp; MOVE_None == 0
+mmD0 = g.node("K2Node_VariableGet",
+    ['VariableReference=(MemberName="MovementMode",MemberParent="/Script/CoreUObject.Class\'%s\'",bSelfContext=False)' % CMC],
+    base="VariableGet", pos=(3550, 3280))
+spD0 = mmD0.pin("self"); spD0.dir = "EGPD_Input"; type_obj(spD0, CMC)
+opD0 = mmD0.pin("MovementMode"); opD0.dir = "EGPD_Output"
+opD0.set("PinType.PinCategory", '"byte"'); opD0.set("PinType.PinSubCategoryObject", ENUM["EMovementMode"])
+g.wire(rMoveD0, "CharacterMovement", mmD0, "self", exec=False)
+eqMMD0 = g.call("EqualEqual_ByteByte", KML, pos=(3750, 3280))
+g.wire(mmD0, "MovementMode", eqMMD0, "A", exec=False)
+g.typed_input(eqMMD0, "B", "0", "byte")   # 0 == MOVE_None
+bFrozD0 = g.branch(pos=(3550, 3050))
+g.wire(bParVD0, "else", bFrozD0, "execute", exec=True)   # unattached humanoid
+g.wire(eqMMD0, "ReturnValue", bFrozD0, "Condition", exec=False)
+walkD0 = bare_call("SetMovementMode", CMC, (3800, 3050))
+set_default(walkD0, "NewMovementMode", "MOVE_Walking", "byte", enum="EMovementMode")
+g.wire(rMoveD0, "CharacterMovement", walkD0, "self", exec=False)
+g.wire(bFrozD0, "then", walkD0, "execute", exec=True)
+colD0 = bare_call("SetActorEnableCollision", ACTOR, (4050, 3050))
+set_default(colD0, "bNewActorEnableCollision", "true", "bool")
+g.wire(loopDist, "Array Element", colD0, "self", exec=False)
+g.wire(walkD0, "then", colD0, "execute", exec=True)
 
-# Seq2.1: update WasMounted = isMounted (every tick)
-setWas = g.var_set("WasMounted", "bool", pos=(2600, 1150))
-g.wire(isMounted, "ReturnValue", setWas, "WasMounted", exec=False)
-g.wire(seq2, "then_1", setWas, "execute", exec=True)
-
-# === PER-TICK MAINTAIN (server-only) -- the FIX for "seated thrall slides to the ground". ===
-# The one-shot stow freeze (DisableMovement, fired once on the mount transition) is REVERSIBLE:
-# Conan's follower catch-up/leash AI re-enables the rider's movement after a while of riding, and
-# CharacterMovement then walks the STILL-attached pawn down to the ground (user-confirmed 2026-06-09:
-# the actor never detaches -- the cosmetic loop keeps posing it because its attach parent is still a
-# mountable horse; and the bug ONLY repros in the cooked game, never PIE -- the small always-loaded
-# PIE world rarely makes a follower fall far enough behind to trip the leash). So EVERY server tick,
-# for each humanoid still seated on a horse: re-pin MOVE_None and re-assert the saddle relative
-# transform. Trigger-agnostic -- defeats a movement-mode flip (V1) AND a teleport/recall drift (V2).
-# Server-authoritative (the leash runs server-side + movement replicates) so this one place fixes
-# SP + listen + dedicated; the per-client cosmetic loop is left alone. Chained off setWas.then so it
-# runs every tick AFTER the scan (PlayerMount/isMounted current).
-bMaint = g.branch(pos=(2900, 2400))
-g.wire(setWas, "then", bMaint, "execute", exec=True)
-g.wire(isMounted, "ReturnValue", bMaint, "Condition", exec=False)
-loopM = g.foreach(CONAN, pos=(3150, 2350))
-g.wire(getFol, "ReturnValue", loopM, "Array", exec=False)
-g.wire(bMaint, "then", loopM, "Exec", exec=True)
-mtblM = g.call("IsMountable", CONAN, pos=(3400, 2580))
-g.wire(loopM, "Array Element", mtblM, "self", exec=False)
-bMtblM = g.branch(pos=(3400, 2350))
-g.wire(loopM, "LoopBody", bMtblM, "execute", exec=True)
-g.wire(mtblM, "ReturnValue", bMtblM, "Condition", exec=False)
-# humanoid (not mountable) -> is its attach parent a mountable horse? (i.e. is it seated?)
-getParM = g.call("GetAttachParentActor", ACTOR, pos=(3650, 2580))
-g.wire(loopM, "Array Element", getParM, "self", exec=False)
-castParM = cast_node(CONAN, (3650, 2350))
-g.wire(getParM, "ReturnValue", castParM, "Object", exec=False)
-g.wire(bMtblM, "else", castParM, "execute", exec=True)   # humanoid -> check parent
-parMtblM = g.call("IsMountable", CONAN, pos=(3900, 2580))
-g.wire(castParM, "AsConan Character", parMtblM, "self", exec=False)
-bSeatedM = g.branch(pos=(3900, 2350))   # cast-fail (parent not a ConanCharacter) dead-ends -> skip
-g.wire(castParM, "then", bSeatedM, "execute", exec=True)
-g.wire(parMtblM, "ReturnValue", bSeatedM, "Condition", exec=False)
-# seated humanoid -> its movement comp
-rMoveM = comp_of(loopM, "Array Element", "CharacterMovement", (4150, 2580))
-# re-pin MOVE_None every tick: idempotent when already frozen, and instantly undoes the
-# leash AI's re-enable the tick it happens (the rider never gets a frame to walk off).
-disableM = bare_call("DisableMovement", CMC, (4400, 2350))
-g.wire(rMoveM, "CharacterMovement", disableM, "self", exec=False)
-g.wire(bSeatedM, "then", disableM, "execute", exec=True)
-# re-assert the saddle relative transform (defeats a teleport/recall drift, V2). Same constants the
-# stow used; relative to the attachrider socket it's still attached to, so re-setting re-glues it.
-setRelM = bare_call("K2_SetActorRelativeLocation", ACTOR, (5400, 2350))
-relpM = setRelM.pin("NewRelativeLocation"); relpM.dir = "EGPD_Input"
-type_struct(relpM, "/Script/CoreUObject.Vector"); relpM.set("DefaultValue", '"0.000000,0.000000,90.000000"')
-g.wire(loopM, "Array Element", setRelM, "self", exec=False)
-g.wire(disableM, "then", setRelM, "execute", exec=True)
-setRotM = bare_call("K2_SetActorRelativeRotation", ACTOR, (5200, 2350))
-rotpM = setRotM.pin("NewRelativeRotation"); rotpM.dir = "EGPD_Input"
-type_struct(rotpM, "/Script/CoreUObject.Rotator"); rotpM.set("DefaultValue", '"0.000000,90.000000,0.000000"')
-g.wire(loopM, "Array Element", setRotM, "self", exec=False)
-g.wire(setRelM, "then", setRotM, "execute", exec=True)
+# === GLOBAL RESTORE SWEEP (after the player loop): any humanoid still seated on a horse NO
+# mounted player legitimized this tick (ActiveSeats) gets restored. ONE restore path covers
+# everything: the normal dismount, a follower that left the follow list mid-ride, and a player
+# who logged out while mounted. Players themselves are EXCLUDED via the PlayerState check (a
+# riding player can read as attached-to-a-mountable -- "restoring" one would be a forced
+# dismount). One-shot by construction: restored -> no longer seated, so the plain AnimBP-mode
+# call fires exactly once (no v28 every-tick-reinit recurrence). ===
+loopG = g.foreach(ACTOR, pos=(250, 3700))
+g.wire(gaC, "OutActors", loopG, "Array", exec=False)
+g.wire(loopPS, "Completed", loopG, "Exec", exec=True)
+castG = cast_node(CONAN, (500, 3700))
+g.wire(loopG, "Array Element", castG, "Object", exec=False)
+g.wire(loopG, "LoopBody", castG, "execute", exec=True)
+getPSG = g.call("GetPlayerState", "/Script/Engine.Pawn", pos=(500, 3900))
+g.wire(castG, "AsConan Character", getPSG, "self", exec=False)
+isPlG = g.call("IsValid", KSL, pos=(700, 3900))
+g.wire(getPSG, "ReturnValue", isPlG, "Object", exec=False)
+bIsPlG = g.branch(pos=(750, 3700))
+g.wire(castG, "then", bIsPlG, "execute", exec=True)
+g.wire(isPlG, "ReturnValue", bIsPlG, "Condition", exec=False)
+mtblG = g.call("IsMountable", CONAN, pos=(750, 4050))
+g.wire(castG, "AsConan Character", mtblG, "self", exec=False)
+bMtblG = g.branch(pos=(1000, 3700))
+g.wire(bIsPlG, "else", bMtblG, "execute", exec=True)     # not a player
+g.wire(mtblG, "ReturnValue", bMtblG, "Condition", exec=False)
+getParG = g.call("GetAttachParentActor", ACTOR, pos=(1000, 4050))
+g.wire(castG, "AsConan Character", getParG, "self", exec=False)
+castParG = cast_node(CONAN, (1250, 3700))
+g.wire(getParG, "ReturnValue", castParG, "Object", exec=False)
+g.wire(bMtblG, "else", castParG, "execute", exec=True)   # humanoid -> seated on what? (cast-fail = not seated)
+parMtblG = g.call("IsMountable", CONAN, pos=(1500, 4050))
+g.wire(castParG, "AsConan Character", parMtblG, "self", exec=False)
+bSeatG = g.branch(pos=(1500, 3700))
+g.wire(castParG, "then", bSeatG, "execute", exec=True)
+g.wire(parMtblG, "ReturnValue", bSeatG, "Condition", exec=False)
+activeG = arr_fn("Array_Contains", ir.obj_path(CONAN), (1750, 4050))
+g.wire(arr_var("ActiveSeats", ir.obj_path(CONAN), (1750, 4250)), "ActiveSeats", activeG, "TargetArray", exec=False)
+arr_item_pin(activeG, "ItemToFind", ir.obj_path(CONAN))
+g.wire(castParG, "AsConan Character", activeG, "ItemToFind", exec=False)
+bActiveG = g.branch(pos=(1750, 3700))
+g.wire(bSeatG, "then", bActiveG, "execute", exec=True)   # seated -> is this seat legit this tick?
+g.wire(activeG, "ReturnValue", bActiveG, "Condition", exec=False)
+rMeshG = comp_of(castG, "AsConan Character", "Mesh", (2000, 4050))
+rMoveG = comp_of(castG, "AsConan Character", "CharacterMovement", (2000, 4230))
+chainG = Chain(bActiveG, "else")                          # NOT legitimized -> restore
+detachG = actor_detach((2250, 3700))   # ACTOR-detach from the horse (replicates), keep world xform
+g.wire(castG, "AsConan Character", detachG, "self", exec=False)
+chainG.then(detachG)
+amodeG = bare_call("SetAnimationMode", SMC, (2500, 3700))
+set_default(amodeG, "InAnimationMode", "AnimationBlueprint", "byte", enum="EAnimationMode")
+g.wire(rMeshG, "Mesh", amodeG, "self", exec=False)
+chainG.then(amodeG)
+walkG = bare_call("SetMovementMode", CMC, (2750, 3700))
+set_default(walkG, "NewMovementMode", "MOVE_Walking", "byte", enum="EMovementMode")
+g.wire(rMoveG, "CharacterMovement", walkG, "self", exec=False)
+chainG.then(walkG)
+colG = bare_call("SetActorEnableCollision", ACTOR, (3000, 3700))
+set_default(colG, "bNewActorEnableCollision", "true", "bool")
+g.wire(castG, "AsConan Character", colG, "self", exec=False)
+chainG.then(colG)
 
 text = g.render()
 bp_ptr, graph_ptr = bp.find_graph(FULL, "EventGraph")
@@ -579,7 +684,7 @@ print("cleared:", bp.clear_graph(bp_ptr, graph_ptr))
 print("inject:", bp.inject(FULL, text, graph_name="EventGraph"))
 
 # stamp the build version on the CDO so we can tell which class actually spawns
-# (read instance.MgrVersion; ==2 -> the fixed class; 0/missing -> a cached old class)
+# (read instance.MgrVersion to detect a cached old class)
 gc = unreal.load_object(None, FULL + "_C")
 if gc:
     cdo = unreal.get_default_object(gc)
@@ -589,6 +694,16 @@ if gc:
     # clients (the root cause of every "host-only" result). Always Relevant = it exists + ticks on
     # every client. (Conan modding wiki: Replication / Relevancy.)
     cdo.set_editor_property("always_relevant", True)
+    # PERF: tick at 10 Hz instead of every frame. The whole mod is polling logic; 100 ms of
+    # seat/maintain/restore latency is imperceptible, and it cuts the per-frame
+    # GetAllActorsOfClass + anim-reset sweep cost ~6x on every instance (server AND clients).
+    try:
+        tickfn = cdo.get_editor_property("primary_actor_tick")
+        tickfn.set_editor_property("tick_interval", 0.1)
+        cdo.set_editor_property("primary_actor_tick", tickfn)
+        print("CDO tick_interval=0.1 set")
+    except Exception as e:
+        print("tick_interval NOT set (perf fix skipped):", e)
     anim_obj = unreal.load_object(None, ANIM)
     if anim_obj:
         cdo.set_editor_property("MountIdleAnim", anim_obj)

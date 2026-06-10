@@ -1,16 +1,24 @@
 """Surface a Blueprint's real compile errors. compile_blueprint doesn't raise, so
 read the error annotations the compiler writes onto the nodes (bHasCompilerMessage/
-ErrorMsg) and report which node + message. Edit FULL to point at your asset.
-Run: python ue_run.py bpkit/ops/compile_errors.py
+ErrorMsg) and report which node + message.
+Run: python ue_run.py bpkit/ops/compile_errors.py /Game/Path/BP_Asset [GraphName]
 """
-from bpkit import bridge as bp
+from bpkit import bridge as bp, config as _cfg
 import unreal
 
-FULL = "/Game/_Scratch/BP_MF_Recipe.BP_MF_Recipe"
-bp_obj = unreal.load_asset("/Game/_Scratch/BP_MF_Recipe")
+_args = _cfg.argv()
+if not _args:
+    raise SystemExit("usage: ue_run.py bpkit/ops/compile_errors.py /Game/Path/BP_Asset [GraphName]")
+PATH = _args[0].rstrip("/")
+GRAPH = _args[1] if len(_args) > 1 else "EventGraph"
+FULL = PATH if "." in PATH else "%s.%s" % (PATH, PATH.rsplit("/", 1)[-1])
+
+bp_obj = unreal.load_asset(PATH.split(".")[0])
+if not bp_obj:
+    raise SystemExit("no asset at %s" % PATH)
 unreal.BlueprintEditorLibrary.compile_blueprint(bp_obj)
 
-bp_ptr, graph_ptr = bp.find_graph(FULL, "EventGraph")
+bp_ptr, graph_ptr = bp.find_graph(FULL, GRAPH)
 txt = bp.export_nodes(bp.graph_nodes(graph_ptr))
 
 # split into node blocks, flag any with a compiler message
@@ -27,12 +35,4 @@ for b in blocks:
               "| fn:", fn.group(1) if fn else "-",
               "| ErrorMsg:", em.group(1) if em else "(flagged, see block)")
 if not flagged:
-    print("no per-node error annotations found in exported text.")
-    print("dumping each node's function ref + any orphan/disconnected required pins:")
-    for b in blocks:
-        if "K2Node_CallFunction" not in b:
-            continue
-        fn = re.search(r'MemberName="([^"]+)"', b)
-        parent = re.search(r"MemberParent=\"[^']*'([^']+)'", b)
-        # required (non-default) input data pins with no link and no default
-        print("  fn:", fn.group(1) if fn else "?", "| parent:", parent.group(1) if parent else "?")
+    print("%s [%s]: compiled, no per-node error annotations." % (FULL, GRAPH))

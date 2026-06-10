@@ -51,10 +51,10 @@ The same steps run individually, via the editor's bundled Python (see the
 | Script | Role |
 |---|---|
 | `00_recon.py` | read-only recon: player pawn, recipe APIs, the ModController hook, mount-state reads |
-| `01_recipe.py` | authors the cosmetic-mount `Stow`/`Restore` (attach + freeze + seated pose / reverse) on a scratch Actor BP |
-| `02_manager.py` | **canonical mod** — `BP_MountedFollowerManager : DreamworldMods.ModController` (MP-ready; version-stamped from `mf_config.MGR_VERSION`). Has a built-in orphan + compile self-check (`BUILD OK`). |
+| `01_recipe.py` | **not built/shipped since v34** — the C1 proof-of-concept (standalone `Stow`/`Restore` recipe BP, superseded mesh-attach pattern); kept as the custom-event authoring example |
+| `02_manager.py` | **canonical mod — the only built step** — `BP_MountedFollowerManager : DreamworldMods.ModController` (per-player, MP-ready; version-stamped from `mf_config.MGR_VERSION`). Has a built-in orphan + compile self-check (`BUILD OK`). |
 | `02a_manager_minimal.py` | smallest teaching slice: a `BeginPlay` that just raises the `Mount` cap |
-| `restore_all.py` | recovery utility — un-stow / reset all followers if the mod misbehaves |
+| `restore_all.py` | dev scratch (formation-testing era) — un-stow / reset followers in PIE if an experiment misbehaves |
 
 The node mechanics this mod relies on (array nodes, ForEach iteration) have
 deterministic regression tests in [`tests/`](../../tests/): `test_array_nodes.py`,
@@ -76,14 +76,18 @@ UnrealPak): [`docs/CONAN-NOTES.md`](../../docs/CONAN-NOTES.md) §Packaging.
 ## Status
 
 **Shipping (experimental — feedback wanted, especially multiplayer/dedicated).**
-Working SP + MP (listen-server), verified in the **cooked/packaged game** — including the leash fix (v31/v32: Conan's follower catch-up AI re-enables a
-seated rider's movement; a per-tick server maintain pass re-pins it; cook-only repro).
-v33 is the release build: identical logic, all on-screen diagnostics stripped.
+v34 is the release build: **per-player** (every player pawn is served — the earlier
+`GetPlayerCharacter(0)` host-only limit is gone), level-triggered + idempotent
+stow/restore (a follower whistled mid-ride saddles up; a global sweep restores any
+seated rider no mounted player accounts for — covering dismounts, followers that
+left the follow list mid-ride, and owners who logged out mounted), the v31/v32
+leash maintain pass (cook-only repro), a statue rescue for riders whose horse died,
+10 Hz polling (`tick_interval=0.1`) for server-scale perf, and zero diagnostics.
 
-Known limitation: the manager tracks **player index 0 only** (`GetPlayerCharacter(0)`
-— the host on a listen server), so in MP other players' followers don't stow yet;
-replication is in place, so everyone *sees* the host's mounted warband. Per-player
-tracking (iterate all player states) is the top roadmap item.
+Verification status: v34 deployed clean (148 nodes, 0 orphans, 0 compile errors,
+independent error-scan clean, 2026-06-10). The **cooked-game ride test is still
+pending**; the underlying v32/v33 logic was verified in the cooked game SP + MP
+(listen-server).
 
 Remaining polish (see [FEASIBILITY.md §9](FEASIBILITY.md)): combat behavior is an
 accepted limitation (dismount to fight — mounted AI combat is player-gated native),

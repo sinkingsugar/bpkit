@@ -50,7 +50,24 @@ RECIPE = "BP_MF_Recipe"                 # the Stow/Restore cosmetic-mount recipe
 #      byte-for-byte the v32 behavior otherwise. NOTE an in-place rebuild leaves the old (now
 #      unused) ReportedFight/DbgCount vars on the existing BP -- harmless, but a fresh build
 #      (or manual var delete in the editor) yields the cleanest shipping asset.
-MGR_VERSION = 33
+# 34 = PER-PLAYER + housekeeping (deployed clean 2026-06-10: 148 nodes, 0 orphans, 0 compile
+#      problems, independent error-scan clean; COOKED-game verification still pending):
+#      - the host-only fix: the server pass iterates EVERY player pawn (valid-PlayerState scan
+#        over the same GetAllActorsOfClass result the cosmetic loop uses) instead of
+#        GetPlayerCharacter(0); caps raised once per player pawn (InitializedPlayers).
+#      - stow/restore went LEVEL-TRIGGERED + idempotent (the seated-check gates the one-shots),
+#        retiring WasMounted/the transition machinery; a follower whistled mid-ride saddles up.
+#      - GLOBAL restore sweep via ActiveSeats: any seated humanoid whose horse no mounted player
+#        legitimized this tick is restored -- covers dismount, followers that left the follow
+#        list mid-ride, and owners who logged out while mounted (players excluded via
+#        PlayerState, else a riding player could be force-dismounted).
+#      - OccupiedHorses excludes already-carrying horses from the spare pool (a stowed rider
+#        doesn't register via GetRider, so re-stows could double-book without it).
+#      - follow-distance stagger reset to 0 when the owner is on foot.
+#      - PERF: CDO tick_interval=0.1 (10 Hz polling instead of per-frame, ~6x cheaper).
+#      - BP_MF_Recipe dropped from the build/pak (vestigial since the manager inlined stow at
+#        v14; its mesh-attach pattern is the superseded pre-MP approach).
+MGR_VERSION = 34
 
 # Seated idle pose played on a stowed rider (full object path).
 IDLE_ANIM = ("/Game/Characters/humans/animations/mounted/Horse/"

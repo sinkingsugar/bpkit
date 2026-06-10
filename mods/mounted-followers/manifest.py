@@ -11,9 +11,13 @@ NAME = "mounted-followers"
 OUTPUT_PKG = _cfg.OUTPUT_PKG
 
 # Ordered build steps, run in the live editor with Play STOPPED. 00_recon.py is
-# read-only diagnostics, not a build step, so it's intentionally excluded; the
-# manager (02) is the mod itself and the recipe (01) is its cosmetic-mount asset.
-BUILD = ["01_recipe.py", "02_manager.py"]
+# read-only diagnostics, not a build step, so it's intentionally excluded. The
+# manager (02) IS the mod: it inlines its own stow/restore, so 01_recipe.py (the
+# C1 proof-of-concept that authored a standalone Stow/Restore recipe BP) is no
+# longer built or shipped -- it's kept as the teaching/reference example of
+# authoring custom events. (BP_MF_Recipe was dropped from the pak at v34; its
+# mesh-attach pattern is the superseded pre-MP approach anyway.)
+BUILD = ["02_manager.py"]
 
 # SHIPPING NOTE -- the controller MUST be a Mod Asset. OUTPUT_PKG (mf_config) points at
 # /Game/Mods/MountedFollowers so the cook tags the BPs "(Mod Asset)" -- a ModController
