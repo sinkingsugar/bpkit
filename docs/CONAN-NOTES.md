@@ -284,9 +284,9 @@ built for render-farm orchestration, perfectly generic in practice.
   required); `on_begin_frame()` is BP-callable as a manual pump fallback.
 - **LIVE-VERIFIED end-to-end in-editor (2026-06-11):** authored scratch BP
   (Bind Event → custom event(Message:String) → Set LastMsg), pointed at a live
-  executor, server pushed a message → BP var held the payload. Probe chain:
-  `bpkit/ops/probe_mrq_socket.py` → `probe_mrq_bp.py` → `probe_mrq_bp_check.py` →
-  `probe_mrq_cleanup.py`.
+  executor, server pushed a message → BP var held the payload. (The one-shot
+  probe chain was cleaned up post-verification — git history has it at
+  `0e1a812`; `mods/mrq-echo/01_mrq.py` is the living worked example.)
 - **PIE-VERIFIED in a live game world (2026-06-11):** `mods/mrq-echo/`'s
   ModController (BeginPlay construct+bind, Tick reconnect, OnSockMsg ack+HUD) ran
   in PIE: connected out, sent the framed hello, and **acked every message the
@@ -303,10 +303,10 @@ built for render-farm orchestration, perfectly generic in practice.
   `MoviePipelinePythonHostExecutor`, `ConnectSocket`, `SendSocketMessage`,
   `SocketMessageRecievedDelegate`, `SendHTTPRequest` (ASCII + UTF-16, 2026-06-11) —
   monolithic builds only link ENABLED plugin modules, so the module loads; runtime
-  registration still wants a cooked-run confirmation (same dedicated-server TODO as
-  rcon-echo). Unlike RCON (dedicated-server-only listener), this class exists in the
-  **client** binary too ⇒ usable in SP/listen, and it's true PUSH (no poll loop).
-  Once cooked-verified it can replace the RCON `poll` half of the gateway.
+  registration still wants a cooked-run confirmation (`mods/mrq-echo/` is the
+  verification vehicle). Unlike RCON (dedicated-server-only listener), this class
+  exists in the **client** binary too ⇒ usable in SP/listen, and it's true PUSH
+  (no poll loop) — which is why it supersedes RCON as the gateway recv channel.
 
 ### Inbound (external process → server BP): **`RconCommandObject`** ★
 RconPlugin (runtime module, enabled, ships) lets a mod **define custom RCON commands in
@@ -327,8 +327,10 @@ Blueprint** — its own docstring: "Blueprint object so you can make rcon comman
 - **EDITOR-VERIFIED (2026-06-11):** a BP subclass with the `RconCommand(world,
   args: Array[str]) -> (Output str, ReturnValue bool)` override authored via
   `bridge.create_function_override` compiles clean and returns the echo when
-  name-dispatched (`call_method`). The proof mod is **`mods/rcon-echo/`**
-  (`bpecho` command + load-chain ModController + a Source-RCON gateway client).
+  name-dispatched (`call_method`). The proof mod `mods/rcon-echo/` (`bpecho`
+  command + load-chain ModController + a Source-RCON gateway client) was
+  **retired 2026-06-11** — superseded by the MRQ channel above for recv; git
+  history has it as-built at `0e1a812` if dedicated-server RCON is ever needed.
   Authoring traps live in `docs/INTERNALS.md` §9 (FunctionEntry paste mangling,
   unwired multi-node paste drop, bound-method-vs-call_method dispatch).
 - **RETAIL SHIPS IT (verified 2026-06-11):** the retail Shipping client binary
@@ -346,10 +348,10 @@ Blueprint** — its own docstring: "Blueprint object so you can make rcon comman
   443030) starts the listener.** In-memory `GConfig` set of
   `[RconPlugin]`/`[ServerSettings] RconEnabled/RconPort/RconPassword` does not
   help (the gate is the build/run target, not the config).
-- **UNVERIFIED until a dedicated-server run (the rcon-echo deliverable):** how the
-  plugin discovers BP subclasses (the controller's hard class-ref covers the load
-  half); wire protocol (Source RCON vs plaintext — `gateway/rcon_client.py` does
-  both); arg tokenization of quoted JSON (worst case: base64 the payload).
+- **UNVERIFIED (and now moot unless MRQ falls through):** how the plugin discovers
+  BP subclasses (a controller hard class-ref covers the load half); wire protocol
+  (Source RCON vs plaintext — the retired rcon-echo's `gateway/rcon_client.py` at
+  `0e1a812` does both); arg tokenization of quoted JSON (worst case: base64).
 
 ### Fallback inbound channels (verified reflected, weaker)
 - `ConanGameState.get_server_command_history()` → `ServerCommandHistory.command_log:
