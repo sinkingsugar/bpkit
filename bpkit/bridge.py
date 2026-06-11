@@ -66,6 +66,19 @@ SYM = {
     # bool FStructureEditorUtils::AddVariable(UUserDefinedStruct*, const FEdGraphPinType&)
     "AddStructVariable": ("UnrealEditor-UnrealEd.dll",
                           b"?AddVariable@FStructureEditorUtils@@SA_NPEAVUUserDefinedStruct@@AEBUFEdGraphPinType@@@Z"),
+    # void UEdGraphSchema_K2::CreateFunctionGraphTerminators(UEdGraph&, UClass*) const
+    # -- the editor's own override-graph builder: creates entry+result with the PARENT
+    #    signature for a graph named exactly like the parent function (see
+    #    create_function_override; a pasted FunctionEntry can NEVER become an override).
+    "CreateFunctionGraphTerminators": ("UnrealEditor-BlueprintGraph.dll",
+                                       b"?CreateFunctionGraphTerminators@UEdGraphSchema_K2@@UEBAXAEAVUEdGraph@@PEAVUClass@@@Z"),
+    # bool UEdGraphSchema_K2::TryCreateConnection(UEdGraphPin*, UEdGraphPin*) const
+    # -- wire two LIVE pins (works across paste sets; ImportNodesFromText can't)
+    "TryCreateConnection": ("UnrealEditor-BlueprintGraph.dll",
+                            b"?TryCreateConnection@UEdGraphSchema_K2@@UEBA_NPEAVUEdGraphPin@@0@Z"),
+    # UEdGraphPin* UEdGraphNode::FindPin(const TCHAR*, EEdGraphPinDirection) const
+    "FindPin": ("UnrealEditor-Engine.dll",
+                b"?FindPin@UEdGraphNode@@QEBAPEAVUEdGraphPin@@PEB_WW4EEdGraphPinDirection@@@Z"),
 }
 
 # ----------------------------------------------------------------------------
@@ -435,6 +448,72 @@ def scratch_blueprint(pkg="/Game/_Scratch", name="BP_Scratch", parent=None):
                                "(stale redirector? try a fresh name)" % path)
         eal.save_asset(path)
     return bp, bp.get_path_name()
+
+
+# ----------------------------------------------------------------------------
+# function OVERRIDE authoring + live pin wiring (proven on RconCommand, 2026-06-11)
+# ----------------------------------------------------------------------------
+def k2_schema():
+    """The UEdGraphSchema_K2 CDO (the `this` for schema member calls)."""
+    s = find_object("/Script/BlueprintGraph.Default__EdGraphSchema_K2")
+    if not s:
+        raise RuntimeError("EdGraphSchema_K2 CDO not found (editor running?)")
+    return s
+
+
+def find_pin(node_ptr, pin_name, direction=2):
+    """UEdGraphNode::FindPin (TCHAR* overload). direction: 0=input, 1=output,
+    2=EGPD_MAX (any). FName compare, so case-insensitive. Returns UEdGraphPin*
+    (0 if absent)."""
+    fn = proc("FindPin", ctypes.c_void_p, ctypes.c_void_p, ctypes.c_wchar_p,
+              ctypes.c_int32)
+    return fn(node_ptr, pin_name, direction)
+
+
+def connect_pins(src_pin_ptr, dst_pin_ptr):
+    """UEdGraphSchema_K2::TryCreateConnection -- schema-validated wire between two
+    LIVE pins. THE way to wire across paste sets / to pre-existing nodes
+    (ImportNodesFromText only cross-links within one pasted set)."""
+    fn = proc("TryCreateConnection", ctypes.c_bool, ctypes.c_void_p,
+              ctypes.c_void_p, ctypes.c_void_p)
+    return bool(fn(k2_schema(), src_pin_ptr, dst_pin_ptr))
+
+
+def create_function_override(bp_obj, func_name, parent_class_path):
+    """Create (or rebuild) a FUNCTION OVERRIDE graph -- entry+result carrying the
+    parent function's exact signature, exec-prewired -- via the editor's own path
+    (UEdGraphSchema_K2::CreateFunctionGraphTerminators). Returns (bp_ptr, graph_ptr);
+    compile afterwards.
+
+    Needed because pasting a K2Node_FunctionEntry can NEVER produce an override:
+    PostPasteNode unconditionally rewrites its FunctionReference to a self-function
+    named after the containing graph (MemberParent wiped), and matching
+    UserDefinedPins still compile as 'declared in a parent with a different
+    signature'. BlueprintEditorLibrary's add_function_graph/rename_graph
+    auto-uniquify a parent-colliding name, so the graph is created with a
+    throwaway name, emptied, UObject-renamed (no K2 validation), then the native
+    terminator builder reads the signature off the parent class. (Worked out on
+    RconCommandObject.RconCommand, 2026-06-11.)"""
+    import unreal
+    full = bp_obj.get_path_name()
+    bp_ptr, g_ptr = find_graph(full, func_name)
+    if not g_ptr:
+        g_ed = unreal.BlueprintEditorLibrary.add_function_graph(bp_obj, "TMP_" + func_name)
+        bp_ptr, g_ptr = find_graph(full, g_ed.get_name())
+        if not g_ptr:
+            raise RuntimeError("could not create function graph on %s" % full)
+        clear_graph(bp_ptr, g_ptr)
+        if not g_ed.rename(func_name):
+            raise RuntimeError("could not rename graph to %s" % func_name)
+    else:
+        clear_graph(bp_ptr, g_ptr)          # rebuild flow: re-terminate in place
+    cls_ptr = find_object(parent_class_path)
+    if not cls_ptr:
+        raise ValueError("parent class not found: %s" % parent_class_path)
+    fn = proc("CreateFunctionGraphTerminators", None, ctypes.c_void_p,
+              ctypes.c_void_p, ctypes.c_void_p)
+    fn(k2_schema(), g_ptr, cls_ptr)
+    return bp_ptr, g_ptr
 
 
 # ----------------------------------------------------------------------------

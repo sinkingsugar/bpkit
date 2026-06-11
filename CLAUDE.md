@@ -36,6 +36,9 @@ and `docs/` for depth; this file is the operational quick-reference.
 - **Driving Play (PIE) is allowed** (user-granted 2026-06-10): start/stop PIE yourself when a test
   needs it (`bpkit/ops/pie_play.py` / `pie_end.py` / `pie_state.py`). Be considerate: announce it,
   don't yank a session the user is actively playing, and prefer read-only probes in *their* session.
+  **A dirty map silently aborts PIE** ("PIE failed because map save was canceled" — the save prompt
+  is dialog-suppressed; `start_play -> True` only means the request was queued). Run
+  `bpkit/ops/save_dirty_maps.py` first, and verify with `pie_state.py`, not the start return.
 - **Never author/compile a Blueprint during PIE** (breaks live instances). Check
   `LevelEditorSubsystem.is_in_play_in_editor()` first; author with Play stopped.
 - **Never fire a native UFunction with guessed/empty args** to "reveal" its signature — it can crash the editor.

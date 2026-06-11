@@ -240,6 +240,141 @@ The real game runs a separate **cook → pak** from the Dev Kit's mod tool, e.g.
   `ConanCharacter.ClientHUDShowNotification(text, positive)` — instance **Client RPC** (call
   server-side on the player char → banner on that client). Both take FText → `Conv_StringToText`.
 
+## Network egress / ingress from content BP (the LLM-NPC channel map, 2026-06-11)
+
+A content-only mod can talk to the outside world; the asymmetry is direction.
+**Outbound is easy, BP-readable inbound was the bottleneck — solved by RCON.**
+
+### Outbound (server BP → external process)
+- **FLS WebSocket:** `WebSocketConnectionManager` (FuncomLiveServices, runtime, ships —
+  retail UTF-16 string verified 2026-06-11) — `init() / connect(ConnectionSettings) /
+  send_message(str) / close()`. `ConnectionSettings` = `m_protocol` / `m_server_url` /
+  `m_upgrade_headers` (Map[str,str]) → arbitrary `wss://` + auth headers.
+  **Send-only at the BP layer — now DEFINITIVE (2026-06-11), not just "sweep found
+  nothing":** the plugin DLL's exec-thunk exports reveal four HIDDEN reflected
+  UFunctions — `OnReceiveData(FString)`, `OnConnectionComplete/Closed/Error` — and
+  their raw FunctionFlags (read via the bridge, `bpkit/ops/probe_ws_flags.py`) are
+  `Final|Native|Private` (0x00040401): `Final` ⇒ the BP compiler refuses any
+  override/shadow, no BP flags ⇒ invisible to graphs, and the class has ZERO
+  reflected properties/delegates, so the received string never touches anything BP
+  can reach. (Funcom reflects them only for native name-binding.) Fun fact:
+  `Init/Connect/SendMessage/Close` are BlueprintNativeEvents — the class was built
+  for BP *sending* only. Recv probes: `bpkit/ops/probe_ws_recv.py` (build-wide
+  sweep v2 incl. BIE visibility ground-truth), `examples/ws_echo_server.py`
+  (stdlib RFC6455 server for future outbound tests).
+- `AsyncTaskDownloadImage` (UMG): HTTP GET beacon; response is only ever a Texture2D, and
+  dedicated servers run nullrhi → useless beyond fire-and-forget.
+
+### Full-duplex TCP with BP RECV: **`MoviePipelineExecutorBase`** ★ (found 2026-06-11)
+The ONLY BP-bindable network-receive delegate in the entire build lives on the Movie
+Render Queue executor (`MovieRenderPipelineCore`, engine plugin, **Runtime** module) —
+built for render-farm orchestration, perfectly generic in practice.
+- **BP API** (construct the concrete child `MoviePipelinePythonHostExecutor` via
+  Construct Object From Class; keep it in a UPROPERTY var or GC eats it):
+  `connect_socket(host, port) -> bool`, `send_socket_message(str) -> bool`,
+  `is_socket_connected()`, `disconnect_socket()`, and
+  **`socket_message_recieved_delegate` — BlueprintAssignable** (Bind Event compiles;
+  schema-validated live-wire accepted). Bonus HTTP pair on the same class:
+  `send_http_request(url, verb, message, headers Map) -> index` +
+  `http_response_recieved_delegate(index, code, message)` (reflected-verified,
+  not yet live-tested).
+- **Wire framing (hexdump-verified):** 4-byte **little-endian** length prefix +
+  UTF-8 payload, both directions. Test server: `examples/mrq_tcp_probe_server.py`.
+- **Recv pump is automatic** every engine frame on an idle instance (no render job
+  required); `on_begin_frame()` is BP-callable as a manual pump fallback.
+- **LIVE-VERIFIED end-to-end in-editor (2026-06-11):** authored scratch BP
+  (Bind Event → custom event(Message:String) → Set LastMsg), pointed at a live
+  executor, server pushed a message → BP var held the payload. Probe chain:
+  `bpkit/ops/probe_mrq_socket.py` → `probe_mrq_bp.py` → `probe_mrq_bp_check.py` →
+  `probe_mrq_cleanup.py`.
+- **PIE-VERIFIED in a live game world (2026-06-11):** `mods/mrq-echo/`'s
+  ModController (BeginPlay construct+bind, Tick reconnect, OnSockMsg ack+HUD) ran
+  in PIE: connected out, sent the framed hello, and **acked every message the
+  server pushed back** — sustained bidirectional delivery, including frames split
+  across TCP segments (the executor reassembles). No `CallInEditor` needed in a
+  begun-play world. Note: PIE ran TWO controller instances (net-mode dependent) —
+  a production manager should gate the connection on `HasAuthority`. And don't
+  pair this mod with a dumb echo server: BP acks the echo, the echo returns the
+  ack → infinite `ack:ack:…` ping-pong (the gateway console doesn't auto-echo).
+- **Editor-world gotcha:** the frame-pump broadcast won't run actor BP script in an
+  editor world unless the bound custom event has `CallInEditor`
+  (`AActor::ProcessEvent` gate); irrelevant in a begun-play game world.
+- **Ships in retail:** `ConanSandbox-Win64-Shipping.exe` contains
+  `MoviePipelinePythonHostExecutor`, `ConnectSocket`, `SendSocketMessage`,
+  `SocketMessageRecievedDelegate`, `SendHTTPRequest` (ASCII + UTF-16, 2026-06-11) —
+  monolithic builds only link ENABLED plugin modules, so the module loads; runtime
+  registration still wants a cooked-run confirmation (same dedicated-server TODO as
+  rcon-echo). Unlike RCON (dedicated-server-only listener), this class exists in the
+  **client** binary too ⇒ usable in SP/listen, and it's true PUSH (no poll loop).
+  Once cooked-verified it can replace the RCON `poll` half of the gateway.
+
+### Inbound (external process → server BP): **`RconCommandObject`** ★
+RconPlugin (runtime module, enabled, ships) lets a mod **define custom RCON commands in
+Blueprint** — its own docstring: "Blueprint object so you can make rcon commands in blueprint."
+- BP-subclass `RconCommandObject`; class defaults `rcon_command_name` (Name) and
+  `rcon_help_string` (str); override `rcon_command(world, args: Array[str]) -> str` —
+  args = the tokenized command line, **the returned string is the RCON response**.
+- Server config (ini/cmdline): `RconEnabled`, `RconPassword`, `RconPort` (no password ⇒
+  "Could not enable Rcon"). Commands are logged to `RconCommandLog.log`.
+- **It's a serial line:** one connection per source IP (a new connection from the same
+  address kills the old one) and one in-flight command per connection ("Still processing
+  previous command"), plus a per-IP karma rate limiter (`RconMaxKarma`). Half-duplex
+  request/response over local TCP — fine for any LLM-cadence loop; tune karma on your own box.
+- Gateway pattern (all gateway-initiated, so no BP receive needed anywhere):
+  `poll` → BP returns pending NPC requests as JSON; gateway runs the LLM;
+  `reply <id> <json>` → BP parses and routes. JSON build/parse in BP via **`PlayFabJsonObject`**
+  (`encode_json`/`decode_json` — pure utility class, ships, no backend dependency).
+- **EDITOR-VERIFIED (2026-06-11):** a BP subclass with the `RconCommand(world,
+  args: Array[str]) -> (Output str, ReturnValue bool)` override authored via
+  `bridge.create_function_override` compiles clean and returns the echo when
+  name-dispatched (`call_method`). The proof mod is **`mods/rcon-echo/`**
+  (`bpecho` command + load-chain ModController + a Source-RCON gateway client).
+  Authoring traps live in `docs/INTERNALS.md` §9 (FunctionEntry paste mangling,
+  unwired multi-node paste drop, bound-method-vs-call_method dispatch).
+- **RETAIL SHIPS IT (verified 2026-06-11):** the retail Shipping client binary
+  `ConanSandbox-Win64-Shipping.exe` contains `RconEnabled`, `Rcon is ready for
+  client connections`, `Rcon disabled.`, AND `RconCommandName` (the BP property)
+  — so RconPlugin and the BP command property are compiled into the shipped game.
+- **RCON listener is DEDICATED-SERVER-ONLY (verified 2026-06-11).** The plugin
+  DLL defines a file-local `StaticDedicatedServerCheck()` and reads
+  `UWorld::InternalGetNetMode`; empirically a PIE **listen server** (which runs
+  IN the editor process) logs `LogRcon: Display: Rcon disabled.` at every PIE
+  start regardless of config or `-RconEnabled=1 -RconPort -RconPassword` launch
+  params. A separate-process PIE `-server` (still the editor binary) never opens
+  the socket either. **You CANNOT test the RCON channel in PIE or on a listen
+  server — only a true Conan *Dedicated Server* (separate Steam tool, appid
+  443030) starts the listener.** In-memory `GConfig` set of
+  `[RconPlugin]`/`[ServerSettings] RconEnabled/RconPort/RconPassword` does not
+  help (the gate is the build/run target, not the config).
+- **UNVERIFIED until a dedicated-server run (the rcon-echo deliverable):** how the
+  plugin discovers BP subclasses (the controller's hard class-ref covers the load
+  half); wire protocol (Source RCON vs plaintext — `gateway/rcon_client.py` does
+  both); arg tokenization of quoted JSON (worst case: base64 the payload).
+
+### Fallback inbound channels (verified reflected, weaker)
+- `ConanGameState.get_server_command_history()` → `ServerCommandHistory.command_log:
+  Array[ServerConsoleCommandLogEntry{caller, command_string}]` — BP-readable log of every
+  server command; a free poll-based inbox even without the Rcon hook.
+- `ServerSettings` is a **replicated actor** with hundreds of R/W props; RCON
+  `SetServerSetting <key> <value>` writes them → usable as a string mailbox cell.
+- PlayFab SDK (rides in via FLS, fully reflected incl. `ExecuteCloudScript` whose response
+  JSON arrives in a BP delegate) — works, but `set_play_fab_settings` repoints a
+  **process-global static** (hijacks the game's own FLS); acceptable only on a dedicated
+  server you own. Superseded by RCON.
+
+### Dead ends (don't re-derive)
+- No BP-reachable **websocket** receive path, definitively (see the FLS bullet:
+  hidden `Final|Native|Private` callbacks, zero reflected surface). The one and only
+  socket-recv delegate in the build is the MRQ executor's (Full-duplex TCP above).
+- `ChatWindow` is pure client UMG (no server-side chat read hook surfaced).
+- `SystemLibrary.clipboard_copy/paste`, `get_environment_variable`, `load_string_from_file`:
+  **not in this build**. `get_console_variable_string_value` exists but content mods can't
+  create cvars.
+- Dreamworld persistence is save-pipeline only (no live read-key API).
+- `ChatGptApiClient` (DialoguePlugin) is **editor-module only** — a dev-time GPT
+  dialogue-tree generator; does not ship. (Fun: Funcom's own tooling already does
+  LLM-authored dialogue at edit time.)
+
 ## Formation system (backburnered — a v2 path)
 
 Native formations make mounted followers move as a smooth group. Activate via

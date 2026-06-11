@@ -212,6 +212,88 @@ What bites:
   silently vanished; the fix was `IsPlayerControlled`, which does reflect. When
   unsure a function exists, probe `hasattr(obj, "snake_case_name")` live first.)
 
+## 9. Function OVERRIDES + cross-set wiring (worked out 2026-06-11, rcon-echo)
+
+Overriding a native function **with a return value** (e.g.
+`RconCommandObject.RconCommand`) cannot be done by paste, period:
+
+- **`K2Node_FunctionEntry` can never be pasted into an override.** Its
+  `PostPasteNode` unconditionally rewrites `FunctionReference` to a
+  **self-function named after the containing graph** (MemberParent wiped,
+  `bIsEditable` flipped) — so the compiler sees a new user function colliding
+  with the parent ("Cannot override '::X' … declared in a parent with a
+  different signature"). Hand-matching the signature with `UserDefinedPins`
+  (even with exact `bIsReference`/`bIsConst` flags) still compiles down the
+  new-function path and fails the same way.
+- **`BlueprintEditorLibrary.add_function_graph` / `rename_graph` auto-uniquify**
+  a parent-colliding name (`RconCommand` → `RconCommand_0`/`_1`), and a compile
+  re-syncs the graph name back from the entry node — you can't sneak the name in.
+- **The way that works** (`bridge.create_function_override`): create a function
+  graph with a throwaway name (so it's registered in the BP), `clear_graph` it,
+  **UObject-`rename()`** it to the function name (raw rename skips the K2
+  validators; legal on an empty graph), then call the editor's own
+  **`UEdGraphSchema_K2::CreateFunctionGraphTerminators(UEdGraph&, UClass*)`**
+  (exported from `UnrealEditor-BlueprintGraph.dll`) with the parent class. It
+  builds the canonical entry+result from the parent signature — MemberParent
+  kept, real pins (the true lowercase param names), exec pre-wired, return-bool
+  pins you didn't know existed included.
+- **Wiring logic into the terminators**: paste can't link to pre-existing nodes,
+  but **`UEdGraphSchema_K2::TryCreateConnection(UEdGraphPin*, UEdGraphPin*)`** +
+  **`UEdGraphNode::FindPin(TCHAR*, dir)`** (both exported) wire live pins across
+  sets — `bridge.find_pin` / `bridge.connect_pins`. This retires the old
+  "re-import the whole graph to rewire" constraint wherever the replace flow
+  would re-mangle terminators.
+- **Multi-node paste of UNWIRED nodes can silently drop all but one** (3 bare
+  CallFunction nodes in one text → 1 pasted; same nodes one-import-each → all
+  fine). Unclear why (wired sets of 148 paste fine). Paste one node per import
+  when they aren't wired to each other, and always assert the pasted count.
+- **Smoke-testing an override from editor Python**: `inst.method_name(...)`
+  binds the NATIVE UFunction directly and **skips the BP override** (returns the
+  native default — looks like your BP "doesn't run"). Use
+  `inst.call_method("FuncName", (args…))` — name dispatch on the instance's
+  class, same as the engine's own call sites.
+
+Delegate-bind / custom-event lessons (MRQ recv probe, 2026-06-11):
+
+- **Custom event WITH parameters pastes fine** — give the `K2Node_CustomEvent` a
+  `CustomProperties UserDefinedPin (PinName="Message",PinType=(PinCategory="string"),
+  DesiredPinDirection=EGPD_Output)` header line and verify the pin exists post-paste
+  with `find_pin`. **Bind Event is just a pasted `K2Node_AddDelegate`** with
+  `DelegateReference=(MemberParent=…,MemberName="…")`; wire
+  `CustomEvent.OutputDelegate → AddDelegate.Delegate` with `connect_pins` (the
+  schema validates signature compatibility — a refusal is itself the answer).
+- **Compile immediately after `clear_graph` before re-pasting same-named custom
+  events** — the stale GeneratedClass function map makes PostPasteNode uniquify
+  the names (`MRQBindNow` → `MRQBindNow_0`). Classify by prefix and capture the
+  real `CustomFunctionName` for later `call_method`.
+- **`set_editor_property` on a spawned instance's BP variable** needs
+  `BlueprintEditorLibrary.set_blueprint_variable_instance_editable(bp, name, True)`
+  first ("cannot be edited on instances" otherwise).
+- **Editor-world actors silently drop BP script fired outside Python**: the
+  `AActor::ProcessEvent` gate blocks non-native script in a not-begun-play world
+  unless inside an editor-script guard (Python calls are) or the function has
+  `CallInEditor` — so a delegate broadcast from the engine's frame pump runs your
+  python `add_callable` but NOT your bound BP event. Header `bCallInEditor=True`
+  on the custom event fixes the editor test; game worlds don't have the gate.
+
+## 10. Hidden UFunctions: full reflected surface + raw FunctionFlags (2026-06-11)
+
+The Python layer (and the BP editor) only show UFunctions with BP flags — a class
+can carry reflected functions you can't see (e.g. `WebSocketConnectionManager`'s
+`OnReceiveData`). Two tools to get the truth:
+
+- **The plugin DLL's exports are the full function list**: every UFUNCTION gets an
+  `exec<Name>` thunk (`?execOnReceiveData@UWebSocketConnectionManager@@…`), and
+  BlueprintNativeEvents additionally get `<Name>_Implementation`. String-scan the
+  module DLL for `exec` thunks to enumerate what reflection has that Python hides.
+- **Raw `EFunctionFlags` via the bridge**: `find_object` resolves a UFunction by
+  path (`/Script/Pkg.Class:Func`); the `FunctionFlags` u32 sits at offset **0xd0**
+  in this build's UFunction — calibrate, don't hardcode: scan offsets until one
+  matches the expected patterns of three knowns with distinct flags (a BIE like
+  `Actor:ReceiveBeginPlay`, a static lib func like `KSL:PrintString`, a BNE).
+  `bpkit/ops/probe_ws_flags.py` is the worked example. `Final` in the flags ⇒ no
+  BP override can ever compile; no BP flags ⇒ unreachable from graphs.
+
 See [CONAN-NOTES.md](CONAN-NOTES.md) for the engine/game-specific node patterns
 discovered while building the mounted-followers mod, and [JOURNEY.md](JOURNEY.md)
 for how all of the above was reverse-engineered.
