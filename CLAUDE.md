@@ -13,11 +13,13 @@ and `docs/` for depth; this file is the operational quick-reference.
 
 ## The Dev Kit + remote-control channel
 - **Install:** `C:\Program Files\Epic Games\CEUE5Devkit` (177 GB — don't write here). Launch `RunDevKit.bat`.
-  **Project:** `...\UE4\ConanSandbox.uproject`. Engine: `5.6.1-364449+++exiles+release`.
+  **Project:** `...\UE4\ConanSandbox.uproject`. Engine: `5.6.1-365199+++exiles+release` (auto-updates via the Epic launcher; version drift = an update happened).
 - Content-only kit: **no C++ compilation, no binary plugins.** That's why graph editing goes through the
   `bpkit` ctypes bridge (`docs/ARCHITECTURE.md`, `docs/INTERNALS.md`).
 - **Remote execution** is ON (Project Settings → Plugins → Python). bpkit drives the editor directly over it —
-  **MCP is not needed** here.
+  **MCP is not needed** here. **A Dev Kit update silently resets it to OFF** (config replaced; bitten
+  2026-06-12, 364449→365199): if ping says "no editor node found" while the editor is open, check the
+  engine version for an update and re-enable the setting before debugging anything else.
 
 ### Running things (fresh shells bite on this)
 - **WHICH PYTHON:** bare `python` hits the (disabled) Windows Store alias and dies. ALWAYS use the bundled

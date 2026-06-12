@@ -222,6 +222,15 @@ The real game runs a separate **cook → pak** from the Dev Kit's mod tool, e.g.
   physical `.uasset` files** (find them with a filesystem scan — `system_path` returns the
   *canonical* `/Game→Content` path, not the real mounted one, so glob by name), reopen, then
   re-deploy. Clean-slate (delete every copy + one fresh deploy) beats whack-a-mole.
+  - **Where `/Game/_Scratch` really lives (mapped 2026-06-12):** the ACTIVE mod's disk folder
+    serves TWO mounts — `Content/Mods/<mod>/Local/` ↔ `/Game/Mods/<mod>/` (the mod's own
+    content), and `Content/Mods/<mod>/Content/` ↔ `/Game/` itself (the base-asset overlay).
+    So any scratch authored at `/Game/_Scratch` while a mod is active physically lands INSIDE
+    that mod's folder (`Content/Mods/<mod>/Content/_Scratch/`) and travels with it. Cleanup
+    recipe that worked editor-open: `delete_asset` the `/Game/_Scratch/...` paths (clears
+    registry + live mount), then immediately delete the surviving `.uasset` ghosts under
+    `Content/Mods/<mod>/Content/_Scratch/` on the filesystem — verified gone both sides,
+    manager BP unaffected.
 - **Inspect a pak — never trust the cook silently.** UnrealPak =
   `C:\Program Files\Epic Games\CEUE5Devkit\Engine\Binaries\Win64\UnrealPak.exe`.
   `UnrealPak <Mod>.pak -List` shows the outer files; `-Extract <dir>` then

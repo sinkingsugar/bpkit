@@ -10,6 +10,7 @@ Run bpkit's readiness check **as a smart diagnosis, not a pass/fail script** —
 `& $py ue_run.py bpkit/ops/ping.py`
 - `ENGINE_VERSION` printed → live.
 - `no editor node found` → editor not running, the Python plugin disabled, or Remote Execution off. Tell the user: launch the editor; confirm **Edit → Plugins → "Python Editor Script Plugin"** is enabled (restart the editor after enabling — without it the remote-exec setting doesn't even exist); then **Project Settings → Plugins → Python → enable "Remote Execution"**; re-run `/setup`.
+  - **A Dev Kit update RESETS Remote Execution to off** (Epic launcher update replaces the project config; observed 2026-06-12, 364449→365199). If the channel worked before and the engine version in the log/ping changed, re-enable the setting first — don't debug anything else. Spot it host-side: tail `...\UE4\Saved\Logs\ConanSandbox.log` and check the `AppVersion`.
 - Python path error → set `$env:BPKIT_PYTHON` to `<engine>\Engine\Binaries\ThirdParty\Python3\Win64\python.exe` (or edit `BPKIT_ENGINE_ROOT` in `bpkit/config.py`).
 
 ## 2. Native bridge (the important diagnosis)
