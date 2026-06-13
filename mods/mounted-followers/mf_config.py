@@ -19,6 +19,23 @@ OUTPUT_PKG = "/Game/Mods/MountedFollowers"
 # Asset names within OUTPUT_PKG.
 MANAGER = "BP_MountedFollowerManager"   # the ModController manager (the mod itself)
 RECIPE = "BP_MF_Recipe"                 # the Stow/Restore cosmetic-mount recipe
+SAVEGAME = "BP_MF_SaveGame"             # USaveGame subclass holding the persisted Mount limit
+COMMAND = "BP_MF_HorsesCommand"         # UDataActorCommand subclass: the `dc MFHorses N` handler
+CMD_TABLE = "DT_MF_Commands"            # 1-row BlueprintCommandDataRow table merged into the game's
+
+# --- configurable Mount-follower limit (v39) ---
+# The mod raises ONLY the "Mount" group cap (never Warrior/Crafter/etc.) so it can't clobber other
+# follower mods (e.g. Better Thralls) -- that overlap was the BT-conflict FPS/limit bug (AstroCat
+# report, 2026-06-13). The cap is SET (reset+add) to MOUNT_LIMIT, an idempotent assert that converges
+# and never stacks. MOUNT_LIMIT is the DEFAULT/fallback; an admin (or SP player) overrides it live with
+#   dc MFHorses <N>     (or  DataCmd MFHorses <N>)
+# which applies to all players immediately (no restart) AND persists to a UE SaveGame slot, reloaded on
+# BeginPlay. Server-authoritative + require_admin (SP players are admin -> works in SP too).
+DEFAULT_MOUNT_LIMIT = 5     # extra Mount slots over the base cap when nothing is configured
+MOUNT_LIMIT_MAX = 50        # clamp ceiling for the dc arg (typo / grief guard)
+SAVE_SLOT = "MountedFollowersConfig"   # UE SaveGame slot (a .sav in Saved/SaveGames; NOT game_0.db)
+CMD_NAME = "MFHorses"       # the console command name: `dc MFHorses N`
+CUSTOM_CMD_TABLE = "/Game/Systems/Cheats/CustomConsoleCommandsDataTable"  # game table we merge into
 
 # Stamped on the manager CDO so you can tell which build actually spawned.
 # 26 = Shipping-safe on-screen diagnostics (HUDShowFIFO heartbeat + mount/dismount banners).
@@ -88,7 +105,18 @@ RECIPE = "BP_MF_Recipe"                 # the Stow/Restore cosmetic-mount recipe
 #      SILENT -- note a Shipping build logs NOTHING from BP, PrintString is a no-op there).
 #      Leash-catch detection restructured to author under DEBUG *or* HUD_DIAG so the PIE log
 #      line survives with the banner off. Release deploy: DEBUG=False too.
-MGR_VERSION = 38
+# 39 = MOUNT-ONLY + CONFIGURABLE LIMIT (the BT-conflict fix + AstroCat's settable-limit ask):
+#      - cap raise now touches ONLY the "Mount" group (was all 6: Mount/Warrior/Crafter/Bearer/
+#        Performer/Archer). Touching the others stacked additively on Better Thralls' groups every
+#        session -> BT fought back per-tick -> server FPS tank + limit clobbering. Mount is the
+#        mod's own group; nothing else manages it, so the conflict is gone.
+#      - SET semantics: reset_thrall_group_limit_adjustment("Mount") + add(..., N) instead of a
+#        guarded one-time add. Idempotent, converges to exactly N, relog/re-apply safe.
+#      - N = DEFAULT_MOUNT_LIMIT (5) unless overridden via `dc MFHorses N` (BP_MF_HorsesCommand,
+#        a UDataActorCommand registered by merging DT_MF_Commands into the game's
+#        CustomConsoleCommandsDataTable at BeginPlay). The command applies to all players live
+#        (no restart) and persists N to a BP_MF_SaveGame slot, reloaded on each per-player init.
+MGR_VERSION = 39
 
 # Seated idle pose played on a stowed rider (full object path).
 IDLE_ANIM = ("/Game/Characters/humans/animations/mounted/Horse/"

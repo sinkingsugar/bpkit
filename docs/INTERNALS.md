@@ -276,6 +276,43 @@ Delegate-bind / custom-event lessons (MRQ recv probe, 2026-06-11):
   python `add_callable` but NOT your bound BP event. Header `bCallInEditor=True`
   on the custom event fixes the editor test; game worlds don't have the gate.
 
+Protected-to-one-function calls + function-graph paste limits (mounted-followers `dc`, 2026-06-13):
+
+- **A UFunction can be BlueprintCallable ONLY inside one specific override.** Conan's
+  `ModController.MergeDataTables`/`ClearDataTable`/`RemoveDataTableRows` (and all
+  `DataTableFunctionLibrary` writes) **drop on paste in the event graph** (and in isolation, both
+  `bSelfContext` and `MemberParent` forms — authored 2 pasted 1). They resolve **only inside the
+  `ModDataTableOperations` override**. Recipe: `create_function_override(bp, "ModDataTableOperations",
+  "/Script/DreamworldMods.ModController")`, inject the call inside it (`bSelfContext=True`), then
+  `connect_pins(entry."then", call."execute")`. (Reflected ≠ BlueprintCallable-as-a-free-node — a
+  Python-callable UFunction may still drop on paste; the paste-drop count is the only tell.)
+- **★ Self-context `VariableGet` DROPS on paste into a function/override graph** (it SURVIVES in the
+  EventGraph). Verified: a lone `var_get("Tbl")` → pasted 2/2 in EventGraph, **pasted 0/1 in
+  `ModDataTableOperations`**. So you cannot read a member var inside an authored override-function graph
+  via paste. Workarounds: feed the inputs as pin **DefaultObject** asset refs instead, or live-spawn.
+- **★ Object-pin `DefaultObject` (asset ref) must be the QUOTED object path.**
+  `DefaultObject="/Game/.../Asset.Asset"` is the editor's canonical **resolved** form: setting
+  `Class'/Game/...'` *normalizes to* the quoted path (proof the editor parsed+resolved it), and the
+  **unquoted** path is **cleared** as unresolvable. (Class-WRAPPER pins like
+  `GetAllActorsOfClass.ActorClass`, `bIsUObjectWrapper=True`, also take the quoted path.) Post-compile
+  the pin showing the quoted path == a resolved ref; the default *absent* == it failed to resolve
+  (silent null at runtime — the same "compiles-but-does-nothing" trap). `CreateSaveGameObject(<Cls>)`
+  auto-narrows `ReturnValue` to `<Cls>` — wire it straight to the subclass-var consumer, no cast (a
+  cast errors "already a …").
+- **Don't assume library getters are pure.** `DoesSaveGameExist` / `LoadGameFromSlot` are **impure**
+  (have exec pins). Wire them into the exec chain or they're "pruned because its Exec pin is not
+  connected" and `ReturnValue` reads the default (false/null) — the branch then always takes the wrong
+  path. Int `Max`/`Min` on `KismetMathLibrary` are named `Max`/`Min` (not `Max_IntInt`).
+- **★ Scratch hygiene — `scratch_blueprint` pollutes the ACTIVE MOD's cook.** With a mod active,
+  `/Game/_Scratch` resolves into that mod's content dir on disk
+  (`…\UE4\Content\Mods\<ActiveMod>\Content\_Scratch\`), so probe/test BPs created by `scratch_blueprint`
+  get **saved there and cook into the mod as (Base Asset)s** (which Conan then culls — and they show in
+  the "Select Content For Mod" dialog). Editor `delete_asset` reports success but **leaves the `.uasset`
+  ghost on disk** (it only drops the in-memory/registry entry). **Sweep after probing**: close the
+  editor and `Remove-Item -Recurse` the `_Scratch` dir(s)
+  (`Get-ChildItem <Content> -Recurse -Directory -Filter _Scratch`). Everything under `_Scratch` is
+  throwaway by convention (regenerable by re-running the example/test/probe), so nuking the dir is safe.
+
 ## 10. Hidden UFunctions: full reflected surface + raw FunctionFlags (2026-06-11)
 
 The Python layer (and the BP editor) only show UFunctions with BP flags — a class

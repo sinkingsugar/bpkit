@@ -17,7 +17,10 @@ OUTPUT_PKG = _cfg.OUTPUT_PKG
 # longer built or shipped -- it's kept as the teaching/reference example of
 # authoring custom events. (BP_MF_Recipe was dropped from the pak at v34; its
 # mesh-attach pattern is the superseded pre-MP approach anyway.)
-BUILD = ["02_manager.py"]
+# Order matters: 03 (SaveGame class) -> 04 (command BP, casts to the SaveGame class) ->
+# 05 (command DataTable, references the command BP class) -> 02 (manager, casts the SaveGame +
+# DefaultObject-refs the command table in its ModDataTableOperations override).
+BUILD = ["03_savegame.py", "04_command.py", "05_command_table.py", "02_manager.py"]
 
 # SHIPPING NOTE -- the controller MUST be a Mod Asset. OUTPUT_PKG (mf_config) points at
 # /Game/Mods/MountedFollowers so the cook tags the BPs "(Mod Asset)" -- a ModController

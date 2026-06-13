@@ -15,6 +15,7 @@ for _m in list(sys.modules):
         sys.modules.pop(_m, None)
 import unreal
 import os
+import re
 from bpkit import bridge as bp, ir, compact as bc, config as _cfg
 sys.path.insert(0, os.path.join(_cfg.REPO_ROOT, "mods", "mounted-followers"))
 sys.modules.pop("mf_config", None)
@@ -29,6 +30,12 @@ GS = "/Script/Engine.GameplayStatics"
 KSL = "/Script/Engine.KismetSystemLibrary"
 KML = "/Script/Engine.KismetMathLibrary"
 KTL = "/Script/Engine.KismetTextLibrary"
+DTAB = "/Script/Engine.DataTable"
+SG_CLS_PATH = "%s/%s.%s_C" % (PKG, MOD.SAVEGAME, MOD.SAVEGAME)   # BP_MF_SaveGame generated class
+MODCTRL = unreal.ModController.static_class().get_path_name()    # ModController (declares MergeDataTables)
+DT_CMD_OBJ = MOD.full(MOD.CMD_TABLE)                              # our 1-row command table (object path)
+_ccc = MOD.CUSTOM_CMD_TABLE
+CUSTOM_CMD_OBJ = "%s.%s" % (_ccc, _ccc.rsplit("/", 1)[1])        # game's CustomConsoleCommandsDataTable
 
 # === DIAGNOSTIC FLAGS (see README §Debugging) ===
 # DEBUG: PIE-only PrintString beacons at the one-shot beats (caps/stow/sweep/rescue + leash
@@ -48,7 +55,10 @@ bp_obj, _ = bp.scratch_blueprint(pkg=PKG, name=NAME, parent=unreal.ModController
 print("manager BP:", FULL)
 # build-version tag (CDO default set below) to detect which class actually spawns
 intt = unreal.BlueprintEditorLibrary.get_basic_type_by_name("int")
-for vn in ("MgrVersion", "HumanoidCounter"):
+# MountLimit: the resolved Mount-cap N for the player being initialized (loaded from the SaveGame
+# slot, else DEFAULT_MOUNT_LIMIT). Scratch per-player-init (the player ForEach body runs to
+# completion per element, like PlayerMount).
+for vn in ("MgrVersion", "HumanoidCounter", "MountLimit"):
     unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, vn, intt)  # no-ops if exists
 conan_ref = unreal.BlueprintEditorLibrary.get_object_reference_type(unreal.ConanCharacter.static_class())
 # PlayerMount: per-player-iteration SCRATCH -- the horse the CURRENT player is riding (found by
@@ -314,6 +324,11 @@ g.wire(tick, "then", gaC, "execute", exec=True)            # NON-GATED cosmetic 
 g.wire(loopMC, "Completed", bAuth, "execute", exec=True)   # THEN the server-gated per-player pass
 g.wire(haz, "ReturnValue", bAuth, "Condition", exec=False)
 
+# NOTE: `dc MFHorses N` registration (merging our command row into the game's
+# CustomConsoleCommandsDataTable) is NOT done here. MergeDataTables is BlueprintProtected and ONLY
+# resolves inside the ModController `ModDataTableOperations` override -- in the event graph it silently
+# drops. That override is built after this graph injects (see the override section near the bottom).
+
 # === v34 PER-PLAYER PASS (the host-only fix). GetPlayerCharacter(0) served exactly one player;
 # now EVERY player pawn gets the full treatment. Player pawns are found by re-walking the SAME
 # GetAllActorsOfClass result the cosmetic loop consumed: a player pawn is a ConanCharacter with
@@ -361,22 +376,57 @@ g.wire(P[0], P[1], hasInit, "ItemToFind", exec=False)
 bInitP = g.branch(pos=(1200, 200))
 g.wire(bIsPl, "then", bInitP, "execute", exec=True)
 g.wire(hasInit, "ReturnValue", bInitP, "Condition", exec=False)
-prev, prev_pin = bInitP, "else"   # not yet initialized -> raise the caps
-for gi, grp in enumerate(("Mount", "Warrior", "Crafter", "Bearer", "Performer", "Archer")):
-    a = g.call("AddThrallGroupLimitAdjustment", TSC, pos=(1450 + gi * 260, 0))
-    g.typed_input(a, "Group", grp, "name")
-    g.typed_input(a, "Amount", "5", "int")
-    g.wire(getTSCp, "ReturnValue", a, "self", exec=False)
-    g.wire(prev, prev_pin, a, "execute", exec=True)
-    prev, prev_pin = a, "then"
-addInit = arr_fn("Array_Add", ir.obj_path(CONAN), (1450 + 6 * 260, 0))
-g.wire(arr_var("InitializedPlayers", ir.obj_path(CONAN), (1450 + 6 * 260, -180)), "InitializedPlayers", addInit, "TargetArray", exec=False)
+prev, prev_pin = bInitP, "else"   # not yet initialized -> SET this player's Mount cap
+# v39: MOUNT-ONLY + configurable. Read the limit N from the SaveGame slot (does-exist ? loaded :
+# DEFAULT_MOUNT_LIMIT) into the MountLimit member, then SET the Mount group cap =
+# reset("Mount") + add("Mount", N). No longer touches Warrior/Crafter/Bearer/Performer/Archer, so
+# it can't clobber Better Thralls' groups (the per-tick BT fight -> FPS tank / limit-overwrite bug,
+# AstroCat 2026-06-13). Read fresh per new player so a `dc MFHorses N` set mid-session reaches joiners.
+dse = g.call("DoesSaveGameExist", GS, pos=(1450, 0))
+g.typed_input(dse, "SlotName", MOD.SAVE_SLOT, "string")
+g.typed_input(dse, "UserIndex", "0", "int")
+g.wire(prev, prev_pin, dse, "execute", exec=True)   # DoesSaveGameExist is IMPURE -> in the exec chain
+bSave = g.branch(pos=(1650, 200))
+g.wire(dse, "then", bSave, "execute", exec=True)
+g.wire(dse, "ReturnValue", bSave, "Condition", exec=False)
+# exists -> load + cast + copy the saved MountLimit into the member
+loadSG = g.call("LoadGameFromSlot", GS, pos=(1900, -50))
+g.typed_input(loadSG, "SlotName", MOD.SAVE_SLOT, "string")
+g.typed_input(loadSG, "UserIndex", "0", "int")
+g.wire(bSave, "then", loadSG, "execute", exec=True)   # LoadGameFromSlot is IMPURE -> in the exec chain
+castSG = cast_node(SG_CLS_PATH, (2150, -50))
+g.wire(loadSG, "ReturnValue", castSG, "Object", exec=False)
+g.wire(loadSG, "then", castSG, "execute", exec=True)
+sgGet = g.var_get("MountLimit", "int", parent=SG_CLS_PATH, pos=(2400, -200))
+g.wire(castSG, "AsBP MF Save Game", sgGet, "self", exec=False)
+setLimL = g.var_set("MountLimit", "int", pos=(2400, -50))
+g.wire(sgGet, "MountLimit", setLimL, "MountLimit", exec=False)
+g.wire(castSG, "then", setLimL, "execute", exec=True)
+# absent -> default
+setLimD = g.var_set("MountLimit", "int", pos=(1900, 320))
+setLimD.pin("MountLimit").literal(str(MOD.DEFAULT_MOUNT_LIMIT))
+g.wire(bSave, "else", setLimD, "execute", exec=True)
+# converge -> SET the Mount cap to MountLimit (reset our prior adjustment, then add N)
+rstM = g.call("ResetThrallGroupLimitAdjustment", TSC, pos=(2650, 0))
+g.typed_input(rstM, "Group", "Mount", "name")
+g.wire(getTSCp, "ReturnValue", rstM, "self", exec=False)
+g.wire(setLimL, "then", rstM, "execute", exec=True)
+g.wire(setLimD, "then", rstM, "execute", exec=True)   # both branches merge here
+addM = g.call("AddThrallGroupLimitAdjustment", TSC, pos=(2900, 0))
+g.typed_input(addM, "Group", "Mount", "name")
+limGet = g.var_get("MountLimit", "int", pos=(2900, 220))
+g.wire(limGet, "MountLimit", addM, "Amount", exec=False)
+g.wire(getTSCp, "ReturnValue", addM, "self", exec=False)
+g.wire(rstM, "then", addM, "execute", exec=True)
+# record the player -> apply once per pawn (the dc command re-applies to live players itself)
+addInit = arr_fn("Array_Add", ir.obj_path(CONAN), (3150, 0))
+g.wire(arr_var("InitializedPlayers", ir.obj_path(CONAN), (3150, -180)), "InitializedPlayers", addInit, "TargetArray", exec=False)
 arr_item_pin(addInit, "NewItem", ir.obj_path(CONAN))
 g.wire(P[0], P[1], addInit, "NewItem", exec=False)
-g.wire(prev, prev_pin, addInit, "execute", exec=True)
+g.wire(addM, "then", addInit, "execute", exec=True)
 initTail = addInit
 if DEBUG:
-    dbgInit = dbg("+5 follower caps applied (new player)", (1450 + 7 * 260, 0))
+    dbgInit = dbg("Mount cap SET for new player", (3400, 0))
     g.wire(addInit, "then", dbgInit, "execute", exec=True)
     initTail = dbgInit
 
@@ -781,6 +831,57 @@ if dropped:
     print("!! PASTE DROPPED %d NODE(S): authored %d, pasted %d -- a function ref didn't"
           " resolve on this build. Diff the render against the readback to find it." %
           (dropped, n_authored, res.get("pasted")))
+
+# === REGISTER `dc MFHorses N`: merge our command row into the game's CustomConsoleCommandsDataTable.
+# MergeDataTables is BlueprintProtected -- it resolves ONLY inside the ModController
+# `ModDataTableOperations` override (verified: drops in the event graph, resolves here). The base
+# ModController calls ModDataTableOperations at mod-init, on every instance (server + clients), which
+# is exactly when/where the row must be registered. Pattern (mrq-echo): create the override
+# (entry+result via the editor path -- paste can't make an override), inject the merge + table gets as
+# a pasted set, then connect_pins the entry exec -> merge (cross-set; paste won't link to the entry). ===
+OPFN = "ModDataTableOperations"
+op_bp_ptr, op_gptr = bp.create_function_override(bp_obj, OPFN, MODCTRL)
+og = ir.Graph(OPFN)
+# self-context VariableGets DROP on paste into this function override graph (only entry+merge survive),
+# so feed the two tables as asset DefaultObject refs directly on the merge inputs instead.
+opMerge = og.node("K2Node_CallFunction",
+                  ['FunctionReference=(MemberName="MergeDataTables",bSelfContext=True)'],
+                  base="CallFunction", pos=(560, 0))
+# Feed the tables as asset DefaultObject refs (self-context VariableGets DROP on paste into a
+# function override graph -- verified). The QUOTED object path is the editor's canonical RESOLVED
+# form: setting Class'path' normalizes to "path", and unquoted is cleared as unresolvable. So quoted
+# == a resolved object ref (verified 2026-06-13).
+mi = opMerge.pin("MergeIntoDataTable"); mi.dir = "EGPD_Input"
+mi.set("PinType.PinCategory", '"object"'); mi.set("PinType.PinSubCategoryObject", ir.obj_path(DTAB))
+mi.set("DefaultObject", '"%s"' % CUSTOM_CMD_OBJ)   # game's CustomConsoleCommandsDataTable
+ta = opMerge.pin("ToBeAddedDataTable"); ta.dir = "EGPD_Input"
+ta.set("PinType.PinCategory", '"object"'); ta.set("PinType.PinSubCategoryObject", ir.obj_path(DTAB))
+ta.set("DefaultObject", '"%s"' % DT_CMD_OBJ)        # our DT_MF_Commands
+op_text = og.render(); op_auth = op_text.count("Begin Object Class=")
+op_res = bp.inject(FULL, op_text, graph_name=OPFN, compile=False, save=False)
+op_drop = op_auth - (op_res.get("pasted") or 0)
+print("override inject:", op_res, "authored:", op_auth, "DROPPED %d" % op_drop if op_drop else "")
+# live-wire: function entry 'then' exec -> MergeDataTables 'execute' (cross-set)
+entry_ptr = merge_ptr = None
+for p in bp.graph_nodes(op_gptr):
+    head = bp.export_nodes([p]).splitlines()[0]
+    if "K2Node_FunctionEntry" in head:
+        entry_ptr = p
+    elif "K2Node_CallFunction" in head:
+        merge_ptr = p
+if entry_ptr and merge_ptr:
+    a = bp.find_pin(entry_ptr, "then", 1); b = bp.find_pin(merge_ptr, "execute", 0)
+    print("entry->merge wired:", bp.connect_pins(a, b) if (a and b) else "PINS MISSING")
+else:
+    print("!! override entry/merge not found:", bool(entry_ptr), bool(merge_ptr))
+bp.mark_structurally_modified(bp_ptr)
+unreal.BlueprintEditorLibrary.compile_blueprint(bp_obj)
+# verify the override graph
+op_txt = bp.export_nodes(bp.graph_nodes(op_gptr))
+op_orph = re.findall(r'PinName="([^"]+)"[^)]*?bOrphanedPin=True', op_txt)
+op_defs = re.findall(r'DefaultObject=([^,)\s]+)', op_txt)
+print("override: MergeDataTables present:", 'MemberName="MergeDataTables"' in op_txt,
+      "| table defaults:", op_defs, "| orphans:", op_orph if op_orph else "(clean)")
 
 # stamp the build version on the CDO so we can tell which class actually spawns
 # (read instance.MgrVersion to detect a cached old class)

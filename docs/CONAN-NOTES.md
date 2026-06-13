@@ -56,6 +56,21 @@ fully **reflected** to Python, which is how it was audited.
   (additive, mod-safe). Default `Warrior`/`Crafter` cap was 1 (a 2nd thrall swapped
   out the 1st). **Runtime adjustments don't persist** — re-apply each session
   (the mod does it in the ModController's guarded init).
+  - **ONLY touch the group you own.** A follower mod that raises `Warrior/Crafter/etc.`
+    stacks additively on *other* follower mods (e.g. Better Thralls) every session →
+    they fight to reset it → per-tick churn → **server-FPS tank + "your mod overwrites
+    my limit"** (the AstroCat report, 2026-06-13). Mounted-followers raises **only** `Mount`.
+  - **No cap GETTER exists** (verified 2026-06-13). The component exposes the follower
+    *count* (`get_follower_group_counts`→`Map[Name,int]`, `get_num_following_thralls`,
+    `get_number_following_thralls_in_group`) and a bool `is_below_thrall_limit()`, but the
+    cap/limit number itself is **unreadable**. There is also no vanilla *per-player*
+    follower-limit ServerSetting to read (the `get_minion_population_*` settings are
+    server-wide NPC caps, not per-player follow caps).
+  - **SET the cap idempotently with `reset_thrall_group_limit_adjustment(g)` + `add(g, N)`.**
+    `reset` zeroes *this mod's* adjustment on group `g`, then `add` re-applies exactly N —
+    converges to N, never stacks, relog/re-apply safe. Better than a guarded one-time `add`
+    (you don't need to read the cap to assert it). `remove_thrall_group_limit_adjustment(g, N)`
+    also exists (subtract a known amount).
 - Follow tuning: `set_additional_follow_distance(N)` staggers followers into a
   trailing line (avoids clustering/bumping at one follow point).
 - AI controllers: humanoid thralls → `HumanAIController`; creatures/mounts →
@@ -69,6 +84,74 @@ fully **reflected** to Python, which is how it was audited.
   undoes a *one-shot* movement freeze on a stowed/seated follower — see the cosmetic-rider
   recipe's freeze bullet. **Triggers in the cooked game, rarely in PIE** (PIE's small
   always-loaded world keeps followers close enough to never trip it).
+
+## Mod-configurable values — console commands, SaveGame, ServerSettings (2026-06-13)
+
+How a **content-only** mod (no C++) lets a server admin / SP player change a value at runtime, and
+make it stick. Mapped exhaustively while making the mounted-followers Mount limit configurable.
+
+### Custom console commands — `DataActorCommand` (THE working path)
+Conan's documented custom-console-command system; works in a content mod. (Funcom wiki: *Custom
+Console Commands* + *Data Table Merging Operations*.)
+- **The handler:** subclass `DataActorCommand` (a singleton Actor) and implement its
+  BlueprintImplementableEvent **`DoCommand(parameters: Array<str>, calling_player_controller, world)`**.
+  Parse `parameters[0]` yourself (`KismetStringLibrary.Conv_StringToInt`, clamp with
+  `KismetMathLibrary.Max`/`Min` — note the BP names are `Max`/`Min`, **not** `Max_IntInt`). Avoid the
+  deprecated `DataCommand` base (no world context).
+- **Registration row:** add a `BlueprintCommandDataRow` to the game's
+  `/Game/Systems/Cheats/CustomConsoleCommandsDataTable`. Row fields: `CommandActorClass` (your
+  `..._C`), `RequireAdmin` (bool — admins in MP; SP players ARE admin so it works in SP too),
+  `RunOnServer`/`RunOnClient` (bools — set **RunOnServer=true** for anything server-authoritative like
+  follower caps; the client just needs the row present to route).
+- **Invoke in-game:** `DataCmd <Name> <args>` or `dc <Name> <args>`. One actor instance per server+client.
+- **★ Registration GOTCHA (cost ~an afternoon):** you CANNOT add the row from the event graph.
+  `MergeDataTables`/`ClearDataTable`/`RemoveDataTableRows` (on `ModController`) and ALL
+  `DataTableFunctionLibrary` writes (`Fill…`, `Export…`) are **NOT BlueprintCallable as free nodes** —
+  they silently DROP on paste (and there's no auto-merge property for command tables; only
+  `additional_gameplay_tag_tables`/`additional_sublevels` auto-merge). They are **BlueprintProtected to
+  one specific override**: the ModController function **`ModDataTableOperations`**. Override THAT
+  (`bridge.create_function_override(bp, "ModDataTableOperations", "/Script/DreamworldMods.ModController")`),
+  and `MergeDataTables` resolves *inside it* (self-call). The base ModController calls
+  `ModDataTableOperations` at mod-init on every instance (server + clients) — exactly when/where the row
+  must register. Build it (mounted-followers): create the override, inject the merge as a pasted set,
+  then `connect_pins(entry."then", merge."execute")` (cross-set; paste won't link to the editor-made
+  entry). See `bpkit/INTERNALS` for the two authoring gotchas this hit (function-graph VariableGet
+  drop; object-pin DefaultObject must be the quoted path).
+- **Build a control table** for column-selective merges (`Merge Data Tables With Control Table` +
+  `DataTableMergeControlRow`: `MergeControl_Default` row, `ColumnsToOverride`,
+  `ColumnsWithRowsToInsert/Remove`) — preserves compat when several mods edit the same rows. Not needed
+  for adding a brand-new row.
+
+### Persistence — UE `SaveGame` (survives restarts; safe)
+Runtime cap adjustments reset each session AND in-memory values die on restart, so a console-set value
+won't stick on its own. To persist: subclass `SaveGame` (one var), and in the command
+`GameplayStatics.CreateSaveGameObject(<SaveGameClass>)` → set the var → `SaveGameToSlot(obj, "<Slot>", 0)`;
+the manager reloads it on init (`DoesSaveGameExist`/`LoadGameFromSlot` — **both IMPURE, exec-wire them**).
+- **No save conflict.** UE SaveGame slots are `…/Saved/SaveGames/<Slot>.sav`; Conan's real persistence is
+  the SQLite **`game_0.db`** (+ `game_0_backup_*`). Different system, different file — they never touch.
+  `Saved/SaveGames/` doesn't even exist until first write. Namespace the slot name to avoid other mods.
+  Failure mode is benign (missing/bad `.sav` → fall back to default; can't corrupt the world DB).
+- `CreateSaveGameObject(<Class>)` **auto-narrows** its `ReturnValue` to that class — no cast needed
+  before reading/writing the subclass var (a cast errors: "already a …").
+
+### Apply LIVE, mid-game (no restart)
+The command must (a) re-apply to all connected players immediately (so existing players see it now), and
+(b) write the SaveGame (so it survives restart) — both, every invocation. A command that only saves
+"does nothing mid-game" until relog. Caps are **server-authoritative** → the command MUST run server-side
+(`RunOnServer`); a client-side run can't change the real cap. Gate to admins via `RequireAdmin` +
+`ConanPlayerController.is_admin()`.
+
+### Dead ends (don't re-derive)
+- **Custom CVars / `[ConsoleVariables]` ini:** `SystemLibrary.get_console_variable_int_value(name)` +
+  `execute_console_command` ARE runtime/ship-safe, BUT a custom cvar reads 0 unless **C++-registered**
+  (verified round-trip: registered `r.ScreenPercentage` 77→77; custom `MountedFollowers.Horses` 7→0).
+  No BP node reads an arbitrary ini key either. So a content mod can't use a custom cvar/ini value.
+- **ServerSettings panel:** `unreal.ServerSettings` is ~hundreds of hardcoded native getters with NO
+  register-by-name / add-custom API; `ModController` has no settings hook. Can't add your own admin slider.
+- **In-game UMG settings UI** (`ModMenuBase`/`SettingsWidgetBase` exist, with a field-value framework):
+  possible, but authoring a WIDGET TREE is unproven in this toolkit, and *surfacing* it (how the player
+  opens it) has no verified ModController/PC hook. The `DataActorCommand` console command is simpler and
+  covers SP + admins, so it's the chosen path; the UI is a future-polish option.
 
 ## Persistent mod logic — the ModController hook
 
