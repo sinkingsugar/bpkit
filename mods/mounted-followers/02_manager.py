@@ -1,6 +1,7 @@
 """C2 manager build (canonical). BP_MountedFollowerManager : ModController.
 ReceiveTick:
-  - non-gated cosmetic seat loop first (runs on EVERY instance: server + clients)
+  - cosmetic seat loop first, on every RENDER-capable instance (clients + listen
+    host + SP); a dedicated server skips it (no render). Ungated by mount state.
   - then server-only (HasAuthority), PER PLAYER (v34): for every player pawn --
     raise the follower group caps once; detect mount state (get_rider scan over
     that player's followers); mounted -> stow unseated humanoids onto spare
@@ -250,10 +251,11 @@ def get_all_actors(cls_path, pos):
     _stype(op, "object", "/Script/CoreUObject.Class'/Script/Engine.Actor'", "Array")
     return n
 
-# === COSMETIC SEAT loop -- driven NON-GATED from ReceiveTick below, so it runs on EVERY instance
-# (server + all clients). Now that the manager is Always Relevant it actually exists + ticks on
-# clients, so this applies the seated single-node anim LOCALLY on each client. (v14 logic, which was
-# correct -- it just never ran on clients because the manager wasn't relevant.) ===
+# === COSMETIC SEAT loop -- driven from ReceiveTick below on every RENDER-capable instance (clients +
+# listen host + SP); a dedicated server skips it (v41 IsDedicatedServer gate -- no render). Ungated by
+# mount state. Now that the manager is Always Relevant it actually exists + ticks on clients, so this
+# applies the seated single-node anim LOCALLY on each client. (v14 logic, which was correct -- it just
+# never ran on clients because the manager wasn't relevant.) ===
 gaC = get_all_actors(CONAN, (300, -1300))
 loopMC = g.foreach(ACTOR, pos=(550, -1300))
 g.wire(gaC, "OutActors", loopMC, "Array", exec=False)
@@ -330,10 +332,11 @@ g.wire(meshMC, "Mesh", amResetMC, "self", exec=False)
 g.wire(bAttMC, "else", amResetMC, "execute", exec=True)
 
 tick = g.event("ReceiveTick")
-# v40 PERF: the OLD tick blindly ran GetAllActorsOfClass(ConanCharacter) -- O(every player + thrall +
-# NPC on the server) -- every tick on every instance, even when nobody was riding. Now: reset the gate,
-# run the cheap per-player pass (server, PlayerArray-driven) / a cheap local mount detect (client) to
-# set AnyMounted, and ONLY THEN, if RunCosmetic, do the expensive GetAllActorsOfClass cosmetic + sweep.
+# v41 PERF: the OLD tick blindly ran GetAllActorsOfClass(ConanCharacter) -- O(every player + thrall +
+# NPC on the server) -- every tick on every instance, even when nobody was riding. Now: reset the
+# AnyMounted gate, run the cheap PlayerArray-driven per-player pass (server) which sets AnyMounted, and
+# gate the two expensive GetAllActorsOfClass calls -- the cosmetic on IsDedicatedServer (render-capable
+# instances only), the global restore sweep on SweepRun (= AnyMounted OR WasMounted).
 resetAM = g.var_set("AnyMounted", "bool", pos=(-700, 0)); resetAM.pin("AnyMounted").literal("false")
 g.wire(tick, "then", resetAM, "execute", exec=True)
 haz = g.call("HasAuthority", ACTOR, pos=(-500, 0))
@@ -361,15 +364,16 @@ g.wire(ddsBranch, "then", bAuth, "execute", exec=True)      # dedicated -> skip 
 # drops. That override is built after this graph injects (see the override section near the bottom).
 
 # === v34 PER-PLAYER PASS (the host-only fix). GetPlayerCharacter(0) served exactly one player;
-# now EVERY player pawn gets the full treatment. Player pawns are found by re-walking the SAME
-# GetAllActorsOfClass result the cosmetic loop consumed: a player pawn is a ConanCharacter with
-# a valid PlayerState (the proven discriminator from the cosmetic loop -- no new node kinds).
+# now EVERY player pawn gets the full treatment. v41: player pawns are enumerated via
+# GameState.PlayerArray -> GetPawn -> cast to ConanCharacter (O(players)), NOT by re-walking the
+# cosmetic loop's GetAllActorsOfClass result -- so the old IsPlayerControlled/PlayerState filter is gone.
 # Stow/restore is LEVEL-TRIGGERED and idempotent instead of transition-edge-triggered: per tick,
 # per mounted player, every UNSEATED humanoid follower is stowed (one-shot by construction: the
 # seated-check gates it) and every SEATED one gets the v31/v32 leash maintain; per unmounted
 # player, every seated follower is restored (one-shot: after the restore it is no longer seated,
-# so the v28 every-tick-AnimBP-reinit catastrophe cannot recur). This retires WasMounted/the
-# transition machinery -- and a follower whistled mid-ride now saddles up too. ===
+# so the v28 every-tick-AnimBP-reinit catastrophe cannot recur). This retires the per-player
+# transition machinery -- and a follower whistled mid-ride now saddles up too. (Note: WasMounted is
+# reintroduced in v41 purely as the global sweep's 1-tick trailing gate -- see the sweep below.) ===
 clrActive = arr_fn("Array_Clear", ir.obj_path(CONAN), (50, 350))
 g.wire(arr_var("ActiveSeats", ir.obj_path(CONAN), (50, 550)), "ActiveSeats", clrActive, "TargetArray", exec=False)
 g.wire(bAuth, "then", clrActive, "execute", exec=True)   # per-tick: reset the legit-seat set
@@ -377,7 +381,8 @@ g.wire(bAuth, "then", clrActive, "execute", exec=True)   # per-tick: reset the l
 # GetAllActorsOfClass(ConanCharacter) result (O(every player+thrall+NPC)). The PlayerArray entries ARE
 # the players, so the old IsPlayerControlled filter is gone. The whole per-player pass (caps/detect/
 # stow/restore) now uses only follower lists -> cheap -> runs every tick (un-gated by mount state, so
-# new players still get their cap init). Only the cosmetic + global sweep gate on RunCosmetic.
+# new players still get their cap init). Only the cosmetic (gated on IsDedicatedServer) and the
+# global restore sweep (gated on SweepRun) are gated by anything.
 gsGet = g.call("GetGameState", GS, pos=(0, 200))
 paGet = g.node("K2Node_VariableGet",
     ['VariableReference=(MemberName="PlayerArray",MemberParent="%s",bSelfContext=False)' % ir.obj_path(GAMESTATE)],
