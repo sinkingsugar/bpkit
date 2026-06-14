@@ -20,8 +20,12 @@ HOW IT WORKS
 
 FEATURES
 - One horse per follower - no clown-stacking.
-- Raises your follower group caps (Mount, Warrior, Crafter, Bearer,
-  Performer, Archer: +5 each) so the warband actually fits.
+- Raises your Mount follower cap (+5 by default) so the warband actually
+  fits - and touches ONLY the Mount group, so it won't fight thrall-cap
+  mods like Better Thralls.
+- Set the retinue size yourself: admins (and solo players, who are their
+  own admin) run `dc MFHorses N` to change the extra mounted slots per
+  player. Takes effect live, no restart, and it sticks across reloads.
 - Works in single-player AND multiplayer.
 - Pure logic mod: no map edits, no asset overrides, no replaced files.
   Stacks peacefully with your other 40 mods.
