@@ -28,7 +28,7 @@ replicates) plus a non-gated client-side cosmetic loop.
 ## Deploy (one command)
 
 **In Claude Code:** `/deploy mounted-followers` — builds the whole mod from its
-[`manifest.py`](manifest.py) (runs `01_recipe` → `02_manager` in order, imports any
+[`manifest.py`](manifest.py) (runs the build steps in `manifest.py` order, imports any
 source assets, verifies). Run with **Play stopped**.
 
 Equivalent manual command:
@@ -44,15 +44,19 @@ The same steps run individually, via the editor's bundled Python (see the
 
 ```powershell
 & $py ue_run.py mods/mounted-followers/00_recon.py            # read-only recon (the 4 build facts)
-& $py ue_run.py mods/mounted-followers/01_recipe.py           # Stow/Restore recipe on a scratch BP
+& $py ue_run.py mods/mounted-followers/03_savegame.py         # SaveGame class (persisted Mount limit)
+& $py ue_run.py mods/mounted-followers/04_command.py          # `dc MFHorses N` command BP
+& $py ue_run.py mods/mounted-followers/05_command_table.py    # command DataTable row
 & $py ue_run.py mods/mounted-followers/02_manager.py          # THE mod: the full manager (canonical)
 ```
 
 | Script | Role |
 |---|---|
 | `00_recon.py` | read-only recon: player pawn, recipe APIs, the ModController hook, mount-state reads |
-| `01_recipe.py` | **not built/shipped since v34** — the C1 proof-of-concept (standalone `Stow`/`Restore` recipe BP, superseded mesh-attach pattern); kept as the custom-event authoring example |
-| `02_manager.py` | **canonical mod — the only built step** — `BP_MountedFollowerManager : DreamworldMods.ModController` (per-player, MP-ready; version-stamped from `mf_config.MGR_VERSION`). Has a built-in orphan + compile self-check (`BUILD OK`). |
+| `03_savegame.py` | `BP_MF_SaveGame : USaveGame` — one var (the persisted Mount limit) |
+| `04_command.py` | `BP_MF_HorsesCommand : UDataActorCommand` — the `dc MFHorses N` handler |
+| `05_command_table.py` | `DT_MF_Commands` — 1-row table merged into the game's command table |
+| `02_manager.py` | **canonical mod — the ModController** — `BP_MountedFollowerManager : DreamworldMods.ModController` (per-player, MP-ready; version-stamped from `mf_config.MGR_VERSION`). Built via `build.build_graph` (`BUILD OK` = no dropped nodes/wires, orphans, wildcards, or error nodes). |
 | `02a_manager_minimal.py` | smallest teaching slice: a `BeginPlay` that just raises the `Mount` cap |
 | `restore_all.py` | dev scratch (formation-testing era) — un-stow / reset followers in PIE if an experiment misbehaves |
 

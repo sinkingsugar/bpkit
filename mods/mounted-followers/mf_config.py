@@ -1,7 +1,7 @@
 """Metadata for the mounted-followers mod -- the single place that decides WHERE the
 mod's generated Blueprints are written and what they're called.
 
-The builders (00_recon / 01_recipe / 02_manager / 02a_manager_minimal) all read
+The builders (00_recon / 02_manager / 02a_manager_minimal) all read
 from here, so changing OUTPUT_PKG moves the whole mod in one edit.
 
 Imported by the builders via bpkit.config.REPO_ROOT (so it works no matter the cwd).
@@ -18,7 +18,6 @@ OUTPUT_PKG = "/Game/Mods/MountedFollowers"
 
 # Asset names within OUTPUT_PKG.
 MANAGER = "BP_MountedFollowerManager"   # the ModController manager (the mod itself)
-RECIPE = "BP_MF_Recipe"                 # the Stow/Restore cosmetic-mount recipe
 SAVEGAME = "BP_MF_SaveGame"             # USaveGame subclass holding the persisted Mount limit
 COMMAND = "BP_MF_HorsesCommand"         # UDataActorCommand subclass: the `dc MFHorses N` handler
 CMD_TABLE = "DT_MF_Commands"            # 1-row BlueprintCommandDataRow table merged into the game's
