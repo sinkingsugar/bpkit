@@ -11,10 +11,13 @@ Conan Exiles Enhanced Dev Kit (UE 5.6.1), but the framework itself is generic.
 Public modules:
     bridge   -- the ctypes engine (read_blueprint / inject / export_nodes / ...).
                 Runs INSIDE the editor (ship it with ue_run.py).
-    ir       -- Graph IR: parse <-> edit <-> render <-> author. Pure stdlib.
+    ir       -- Graph IR + authoring DSL: parse <-> edit <-> render, plus the
+                node-builders (event/call/branch/foreach/cast/get_all_actors/
+                array_*/var_*/chain). Pure stdlib.
+    build    -- one-call build+verify harness (inject -> auto-relink dropped
+                wires -> compile -> scan). Runs inside the editor.
     compact  -- navigable compaction of exported node text (~23x). Pure stdlib.
     pe       -- dependency-free PE export-table dumper (find symbol names).
-    author   -- minimal declarative authoring DSL (event/call/branch/wire). Pure stdlib.
     config   -- paths + remote-exec endpoints (override via BPKIT_* env vars).
 
 Operational tools live in bpkit.ops (ping, selftest, pie, modal, cleanup, log

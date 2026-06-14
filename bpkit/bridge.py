@@ -454,11 +454,44 @@ def missing_links(authored_text, final_text):
     return sorted(out)
 
 
-def inject(bp_path, text, graph_name="EventGraph", precheck=True, compile=True, save=True):
+def _relink_dropped(graph_ptr, authored_text):
+    """For every authored in-text wire that did NOT survive paste, reconnect it live
+    via connect_pins (the K2Node_GetArrayItem.Output wildcard class -- no orphan, no
+    compile error, the consumer just keeps its default). Node+pin names are preserved
+    across paste, so we map name -> live node_ptr and re-link by name. Returns
+    (relinked, still_missing) as lists of 'A.pin <-> B.pin' strings. Cross-set links
+    (to nodes NOT in `authored_text`, e.g. a function-entry) are out of scope -- they
+    were never in the paste, so missing_links won't report them; the caller handles
+    those with its own connect_pins."""
+    import re
+    miss = missing_links(authored_text, export_nodes(graph_nodes(graph_ptr)))
+    if not miss:
+        return [], []
+    name2ptr = {}
+    for p in graph_nodes(graph_ptr):
+        m = re.search(r'Name="([^"]+)"', export_nodes([p]).splitlines()[0])
+        if m:
+            name2ptr[m.group(1)] = p
+    relinked, still = [], []
+    for link in miss:
+        a, b = link.split(" <-> ")
+        an, ap = a.rsplit(".", 1)
+        bn, bpn = b.rsplit(".", 1)
+        pa = find_pin(name2ptr[an], ap, 2) if an in name2ptr else 0
+        pb = find_pin(name2ptr[bn], bpn, 2) if bn in name2ptr else 0
+        (relinked if (pa and pb and connect_pins(pa, pb)) else still).append(link)
+    return relinked, still
+
+
+def inject(bp_path, text, graph_name="EventGraph", precheck=True, compile=True,
+           save=True, relink=True):
     """High-level write: paste `text` into <bp_path>'s <graph_name>, then (by
     default) compile and save. `bp_path` is a full object path '/Game/X.X'.
-    Returns a result dict (incl. `dropped_links`: authored wires that did NOT
-    survive paste -- see missing_links). Compile/save use the reflected `unreal` API."""
+    With relink=True (default) inject SELF-HEALS: any authored wire the engine
+    silently drops on paste (the GetArrayItem.Output wildcard class) is reconnected
+    live via connect_pins. Returns a result dict incl. `relinked` (wires re-made)
+    and `dropped_links` (wires STILL missing after relink -- should be empty; a
+    non-empty list is a real bug). Compile/save use the reflected `unreal` API."""
     import unreal
     bp_ptr, graph_ptr = find_graph(bp_path, graph_name)
     if not bp_ptr:
@@ -468,14 +501,15 @@ def inject(bp_path, text, graph_name="EventGraph", precheck=True, compile=True, 
     if precheck and not can_import(graph_ptr, text):
         return {"ok": False, "reason": "schema rejected the text", "pasted": 0}
     pasted = import_nodes(graph_ptr, text)
-    mark_structurally_modified(bp_ptr)
     result = {"ok": True, "pasted": pasted}
-    # surface wires that silently dropped on paste (data only; the caller re-makes
-    # them with connect_pins, then confirms with a post-fix missing_links check).
     try:
-        result["dropped_links"] = missing_links(text, export_nodes(graph_nodes(graph_ptr)))
+        if relink:
+            result["relinked"], result["dropped_links"] = _relink_dropped(graph_ptr, text)
+        else:
+            result["dropped_links"] = missing_links(text, export_nodes(graph_nodes(graph_ptr)))
     except Exception as e:
         result["dropped_links"] = ["<link-check failed: %r>" % e]
+    mark_structurally_modified(bp_ptr)
     asset_path = bp_path.split(".")[0]
     bp_obj = unreal.load_asset(asset_path)
     if compile:

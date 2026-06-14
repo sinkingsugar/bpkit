@@ -160,7 +160,16 @@ re-import `Graph.render()` as one set → compile.
 
 The verbose copy/paste text has ~20 default flags per pin. You only need to
 specify *intent*; UE reconstructs the rest on import by matching pin **names**.
-What bites:
+
+**Most of the gotchas below are encapsulated in the library now — reach for those
+first.** `ir.Graph` carries typed node-builders (`cast` / `get_all_actors` /
+`array_fn` / `array_get` / `array_var` / `var_get` / `var_set` / `foreach` /
+`chain`) that bake in the correct PinTypes, and `build.build_graph()` does the
+whole inject → auto-relink dropped wires → compile → scan tail in one call
+(`inject(relink=True)` self-heals the `GetArrayItem.Output` drop). Conan/gameplay
+builders (comp_of / attach / detach / HUD) live in `mods/mounted-followers/mf_nodes.py`.
+Hand-author raw node text only for a node the builders don't cover; the notes
+below explain *why* the builders are shaped the way they are. What bites:
 
 - **Typed-pin orphan trap.** A default or data wire only *merges* into a node's
   canonical pin if the authored pin carries a matching `PinType`. A typeless pin

@@ -17,7 +17,7 @@ for _m in list(sys.modules):
 import unreal
 import os
 import re
-from bpkit import bridge as bp, ir, compact as bc, config as _cfg
+from bpkit import bridge as bp, ir, build, compact as bc, config as _cfg
 sys.path.insert(0, os.path.join(_cfg.REPO_ROOT, "mods", "mounted-followers"))
 sys.modules.pop("mf_config", None)
 import mf_config as MOD
@@ -103,153 +103,42 @@ ANIM = MOD.IDLE_ANIM
 
 g = ir.Graph("EventGraph")
 
-def cast_node(target, pos):
-    return g.node("K2Node_DynamicCast",
-                  ['TargetType="/Script/CoreUObject.Class\'%s\'"' % target], base="DynamicCast", pos=pos)
+# === bpkit library bindings ==================================================
+# Engine-generic node-builders (cast / get_all_actors / array_* / var_* / chain)
+# now live on ir.Graph; the Conan/gameplay-specific ones (comp_of / attach /
+# detach / HUD) live in mf_nodes. These thin adapters bind them to THIS module's
+# graph `g` and keep the historical local names, so the graph body below is
+# UNCHANGED (the gotcha-encoding bodies are gone -- they're in the library now).
+sys.modules.pop("mf_nodes", None)
+import mf_nodes as mf
+CHAR, SMC, SCENE, CMC, ACTOR, CAPSULE = mf.CHAR, mf.SMC, mf.SCENE, mf.CMC, mf.ACTOR, mf.CAPSULE
+CLS, STRUCTS, ENUM = mf.CLS, mf.STRUCTS, mf.ENUM
 
-# --- diagnostic node helpers (flags defined at the top; see README §Debugging) ---
-def dbg(msg, pos):
-    """PrintString beacon, auto-stamped with the build version; wire exec via execute/then.
-    Only call under DEBUG. PIE-only (PrintString is compiled out of Shipping)."""
-    p = g.call("PrintString", KSL, pos=pos)
-    g.typed_input(p, "InString", "MF v%d: %s" % (MOD.MGR_VERSION, msg), "string")
-    return p
-def txt_lit(s, pos):
-    c = g.call("Conv_StringToText", KTL, pos=pos)
-    g.typed_input(c, "InString", s, "string")
-    return c
-def fifo(txt_node, pos):
-    """SHIP-VISIBLE banner: ConanCharacter.HUDShowFIFO(FText) -> the local client's scrolling
-    event feed; survives Shipping. WorldContextObject is AUTO-MANAGED: the compiler binds it to
-    self (manual links to it are DROPPED on paste -- verified v26). Only call under HUD_DIAG."""
-    f = g.call("HUDShowFIFO", CONAN, pos=pos)
-    g.wire(txt_node, "ReturnValue", f, "Text", exec=False)
-    return f
-
-# --- C1 attach/restore node helpers (replicated; reuse the proven Stow/Restore pattern) ---
-CHAR = "/Script/Engine.Character"
-SMC = "/Script/Engine.SkeletalMeshComponent"
-SCENE = "/Script/Engine.SceneComponent"
-CMC = "/Script/Engine.CharacterMovementComponent"
-ACTOR = "/Script/Engine.Actor"
-CLS = {"Mesh": SMC, "CharacterMovement": CMC,
-       "CapsuleComponent": "/Script/Engine.CapsuleComponent",
-       "PlayerMount": CONAN, "MountIdleAnim": "/Script/Engine.AnimSequence"}
-STRUCTS = {}
-ENUM = {
-    "EAttachmentRule": "/Script/CoreUObject.Enum'/Script/Engine.EAttachmentRule'",
-    "EAnimationMode":  "/Script/CoreUObject.Enum'/Script/Engine.EAnimationMode'",
-    "EMovementMode":   "/Script/CoreUObject.Enum'/Script/Engine.EMovementMode'",
-    "EDetachmentRule": "/Script/CoreUObject.Enum'/Script/Engine.EDetachmentRule'",
-}
-def type_obj(pin, cls_path):
-    pin.set("PinType.PinCategory", '"object"')
-    pin.set("PinType.PinSubCategoryObject", "/Script/CoreUObject.Class'%s'" % cls_path)
-def type_struct(pin, struct_path):
-    pin.set("PinType.PinCategory", '"struct"')
-    pin.set("PinType.PinSubCategoryObject", "/Script/CoreUObject.ScriptStruct'%s'" % struct_path)
-def type_var_pin(pin, name):
-    type_struct(pin, STRUCTS[name]) if name in STRUCTS else type_obj(pin, CLS[name])
-def var_self(name, pos):
-    n = g.node("K2Node_VariableGet", ['VariableReference=(MemberName="%s",bSelfContext=True)' % name],
-               base="VariableGet", pos=pos)
-    p = n.pin(name); p.dir = "EGPD_Output"; type_var_pin(p, name); return n
-def var_set_m(name, pos):
-    n = g.node("K2Node_VariableSet", ['VariableReference=(MemberName="%s",bSelfContext=True)' % name],
-               base="VariableSet", pos=pos)
-    p = n.pin(name); p.dir = "EGPD_Input"; type_var_pin(p, name); return n
-def comp_of(target, target_pin, comp_var, pos, parent=CHAR):
-    """Read a component (Mesh/CharacterMovement/Capsule) off `target`'s output pin."""
-    n = g.node("K2Node_VariableGet",
-               ['VariableReference=(MemberName="%s",MemberParent="/Script/CoreUObject.Class\'%s\'",bSelfContext=False)'
-                % (comp_var, parent)], base="VariableGet", pos=pos)
-    sp = n.pin("self"); sp.dir = "EGPD_Input"; type_obj(sp, parent)
-    op = n.pin(comp_var); op.dir = "EGPD_Output"; type_obj(op, CLS[comp_var])
-    g.wire(target, target_pin, n, "self", exec=False); return n
-def set_default(node, pin, value, category, enum=None):
-    p = node.pin(pin); p.dir = "EGPD_Input"
-    p.set("PinType.PinCategory", '"%s"' % category)
-    if enum: p.set("PinType.PinSubCategoryObject", ENUM[enum])
-    p.set("DefaultValue", '"%s"' % value)
-def bare_call(member, parent, pos):
-    return g.call(member, parent, pos=pos)
-def attach_node(pos, socket, rules="SnapToTarget"):
-    n = bare_call("K2_AttachToComponent", SCENE, pos)
-    set_default(n, "SocketName", socket, "name")
-    for r in ("LocationRule", "RotationRule", "ScaleRule"):
-        set_default(n, r, rules, "byte", enum="EAttachmentRule")
-    set_default(n, "bWeldSimulatedBodies", "false", "bool")
-    return n
-def actor_attach(pos, socket, rules="SnapToTarget"):
-    """AActor::K2_AttachToComponent -- attaches the ACTOR (its root) to a parent component.
-    Actor attachment REPLICATES (unlike component/mesh attachment), so clients see the rider."""
-    n = bare_call("K2_AttachToComponent", ACTOR, pos)
-    set_default(n, "SocketName", socket, "name")
-    for r in ("LocationRule", "RotationRule", "ScaleRule"):
-        set_default(n, r, rules, "byte", enum="EAttachmentRule")
-    set_default(n, "bWeldSimulatedBodies", "false", "bool")
-    return n
-def actor_detach(pos, rules="KeepWorld"):
-    """AActor::K2_DetachFromActor -- the BP-callable detach (matches K2_AttachToComponent). Plain
-    'DetachFromActor' is the C++ name and silently does nothing here -- cost the dismount bug."""
-    n = bare_call("K2_DetachFromActor", ACTOR, pos)
-    for r in ("LocationRule", "RotationRule", "ScaleRule"):
-        set_default(n, r, rules, "byte", enum="EDetachmentRule")
-    return n
-class Chain(object):
-    def __init__(self, start_node, start_pin):
-        self.node, self.pin = start_node, start_pin
-    def then(self, call_node, in_pin="execute", out_pin="then"):
-        g.wire(self.node, self.pin, call_node, in_pin, exec=True)
-        self.node, self.pin = call_node, out_pin; return call_node
-
-# --- array-function helpers (validated by tests/test_array_nodes.py). Array funcs MUST be
-# K2Node_CallArrayFunction (NOT plain CallFunction) with a fully-typed TargetArray, else the
-# wildcard never resolves -> "Target Array is undetermined" compile fail. ---
-KARRC = "/Script/Engine.KismetArrayLibrary"
-def _stype(pin, cat, sub=None, container=None, ref=False, const=False):
-    pin.set("PinType.PinCategory", '"%s"' % cat)
-    if sub: pin.set("PinType.PinSubCategoryObject", sub)
-    if container: pin.set("PinType.ContainerType", container)
-    if ref: pin.set("PinType.bIsReference", "True")
-    if const: pin.set("PinType.bIsConst", "True")
-def arr_fn(member, elem_sub, pos):
-    n = g.node("K2Node_CallArrayFunction",
-        ['FunctionReference=(MemberParent="%s",MemberName="%s")' % (ir.obj_path(KARRC), member)],
-        base="ArrFn", pos=pos)
-    sp = n.pin("self"); sp.dir = "EGPD_Input"; _stype(sp, "object", ir.obj_path(KARRC))
-    sp.set("DefaultObject", "/Script/Engine.Default__KismetArrayLibrary"); sp.set("bHidden", "True")
-    tp = n.pin("TargetArray"); tp.dir = "EGPD_Input"
-    _stype(tp, "object", elem_sub, "Array", ref=True, const=True); tp.set("bDefaultValueIsIgnored", "True")
-    return n
-def arr_var(name, elem_sub, pos):
-    n = g.var_get(name, "object", elem_sub, pos=pos)
-    n.pin(name).set("PinType.ContainerType", "Array"); return n
+def cast_node(target, pos):         return g.cast(target, pos)
+def get_all_actors(cls_path, pos):  return g.get_all_actors(cls_path, pos)
+def bare_call(member, parent, pos): return g.call(member, parent, pos=pos)
+def Chain(node, pin):               return g.chain(node, pin)
+def arr_fn(member, elem_sub, pos):  return g.array_fn(member, pos, elem_sub=elem_sub)
+def arr_var(name, elem_sub, pos):   return g.array_var(name, pos, elem_sub=elem_sub)
 def arr_item_pin(node, pin_name, elem_sub):
-    """Type a CallArrayFunction's element pin (NewItem / ItemToFind) to match TargetArray."""
-    p = node.pin(pin_name); p.dir = "EGPD_Input"; _stype(p, "object", elem_sub)
-    return p
+    return g.array_item_pin(node, pin_name, elem_sub=elem_sub)
 def get_item(arr_node, arr_pin, idx_node, idx_pin, elem_sub, pos):
-    n = g.node("K2Node_GetArrayItem", ["bReturnByRefDesired=False"], base="GetItem", pos=pos)
-    ap = n.pin("Array"); ap.dir = "EGPD_Input"; _stype(ap, "object", elem_sub, "Array")
-    ip = n.pin("Dimension 1"); ip.dir = "EGPD_Input"; _stype(ip, "int")
-    op = n.pin("Output"); op.dir = "EGPD_Output"; _stype(op, "object", elem_sub)
-    g.wire(arr_node, arr_pin, n, "Array", exec=False)
-    g.wire(idx_node, idx_pin, n, "Dimension 1", exec=False)
-    return n
-def get_all_actors(cls_path, pos):
-    """GameplayStatics.GetAllActorsOfClass(cls_path) -> OutActors (object array). ActorClass is a
-    class-wrapper pin set via DefaultObject; OutActors typed to the class."""
-    n = g.call("GetAllActorsOfClass", GS, pos=pos)
-    ap = n.pin("ActorClass"); ap.dir = "EGPD_Input"
-    ap.set("PinType.PinCategory", '"class"')
-    ap.set("PinType.PinSubCategoryObject", "/Script/CoreUObject.Class'/Script/Engine.Actor'")
-    ap.set("PinType.bIsUObjectWrapper", "True"); ap.set("DefaultObject", '"%s"' % cls_path)  # MUST be quoted, else ActorClass=null -> 0 results
-    # OutActors is Actor-typed (the wildcard output won't take a narrower type on paste); the
-    # runtime ActorClass default still filters to cls_path, so contents are cls_path instances.
-    op = n.pin("OutActors"); op.dir = "EGPD_Output"
-    _stype(op, "object", "/Script/CoreUObject.Class'/Script/Engine.Actor'", "Array")
-    return n
+    return g.array_get(arr_node, arr_pin, (idx_node, idx_pin), pos, elem_sub=elem_sub)
+
+def type_obj(pin, cls_path):        mf.type_obj(pin, cls_path)
+def type_struct(pin, struct_path):  mf.type_struct(pin, struct_path)
+def var_self(name, pos):            return mf.var_self(g, name, pos)
+def var_set_m(name, pos):           return mf.var_set_m(g, name, pos)
+def comp_of(target, target_pin, comp_var, pos, parent=CHAR):
+    return mf.comp_of(g, target, target_pin, comp_var, pos, parent)
+def set_default(node, pin, value, category, enum=None):
+    mf.set_default(node, pin, value, category, enum)
+def attach_node(pos, socket, rules="SnapToTarget"):  return mf.attach_component(g, pos, socket, rules)
+def actor_attach(pos, socket, rules="SnapToTarget"): return mf.attach_actor(g, pos, socket, rules)
+def actor_detach(pos, rules="KeepWorld"):            return mf.detach_actor(g, pos, rules)
+def dbg(msg, pos):                  return mf.dbg(g, msg, pos, MOD.MGR_VERSION)
+def txt_lit(s, pos):                return mf.txt_lit(g, s, pos)
+def fifo(txt_node, pos):            return mf.fifo(g, txt_node, pos)
 
 # === COSMETIC SEAT loop -- driven from ReceiveTick below on every RENDER-capable instance (clients +
 # listen host + SP); a dedicated server skips it (v41 IsDedicatedServer gate -- no render). Ungated by
@@ -877,21 +766,12 @@ chainG.then(colG)
 if DEBUG:
     chainG.then(dbg("sweep-restored a rider (dismount/orphan)", (3250, 3700)))
 
-text = g.render()
-n_authored = text.count("Begin Object Class=")
-bp_ptr, graph_ptr = bp.find_graph(FULL, "EventGraph")
-print("cleared:", bp.clear_graph(bp_ptr, graph_ptr))
-res = bp.inject(FULL, text, graph_name="EventGraph")
-print("inject:", res)
-# PASTE-DROP GUARD: ImportNodesFromText SILENTLY DISCARDS nodes whose function ref doesn't
-# resolve on this build (no orphan, no compile error -- downstream pins just lose their links;
-# this is how GetPlayerState vanished in v34/v35 and killed the per-player pass). authored !=
-# pasted is the only tell.
-dropped = n_authored - (res.get("pasted") or 0)
-if dropped:
-    print("!! PASTE DROPPED %d NODE(S): authored %d, pasted %d -- a function ref didn't"
-          " resolve on this build. Diff the render against the readback to find it." %
-          (dropped, n_authored, res.get("pasted")))
+# Build the EventGraph through the harness: clear + inject (auto-relinks any wire the engine
+# drops on paste -- the GetArrayItem.Output class) + compile + save + full scan (dropped
+# nodes via count, dropped wires, orphans, wildcards, error nodes) + BUILD OK. The
+# ModDataTableOperations override + CDO stamping follow (separate graph / class defaults).
+build.build_graph(FULL, g)
+bp_ptr, graph_ptr = bp.find_graph(FULL, "EventGraph")   # ptrs for the override + CDO below
 
 # === REGISTER `dc MFHorses N`: merge our command row into the game's CustomConsoleCommandsDataTable.
 # MergeDataTables is BlueprintProtected -- it resolves ONLY inside the ModController
@@ -971,30 +851,5 @@ if gc:
         print("CDO MountIdleAnim set:", anim_obj.get_name())
     unreal.EditorAssetLibrary.save_asset(PATH)
     print("CDO MgrVersion=%d + always_relevant stamped" % MOD.MGR_VERSION)
-txt = bp.export_nodes(bp.graph_nodes(graph_ptr))
-import re
-orphans = re.findall(r'PinName="([^"]+)"[^)]*?bOrphanedPin=True', txt)
-print("ORPHANS:", len(orphans), orphans if orphans else "(clean)")
-
-# REAL compile verification -- do NOT trust inject's compiled flag (it means "compile
-# ran", not "no errors"). Scan the compiled graph per-node for unresolved wildcard pins
-# (e.g. an Array_Length whose type never got implied -> "Target Array is undetermined")
-# and for compiler-stamped error markers. The ForEach macro legitimately carries wildcard
-# pins (resolved via its ResolvedWildcardType header) so it's excluded.
-problems = []
-for blk in re.split(r'(?=Begin Object Class=)', txt):
-    if not blk.strip():
-        continue
-    name = (re.search(r'Name="([^"]+)"', blk) or [None, "?"])[1]
-    is_macro = "K2Node_MacroInstance" in blk  # ForEach etc.: wildcard is expected/resolved
-    for pin in re.findall(r'CustomProperties Pin \((.*)\)', blk):
-        pn = (re.search(r'PinName="([^"]+)"', pin) or [None, "?"])[1]
-        if 'PinCategory="wildcard"' in pin and not is_macro:
-            problems.append("WILDCARD unresolved: %s.%s" % (name, pn))
-    if "ErrorMsg=" in blk or 'bHasCompilerMessage=True' in blk:
-        problems.append("ERROR-MARKED node: %s" % name)
-print("COMPILE PROBLEMS:", len(problems))
-for p in problems:
-    print("  !!", p)
-print("BUILD OK" if not problems and not orphans and not dropped
-      else "BUILD HAS ISSUES -- DO NOT PLAY YET")
+# (EventGraph scan + BUILD OK verdict are handled by build.build_graph above; the override
+# graph has its own verify, and the CDO stamping printed its own confirmation.)
