@@ -96,7 +96,7 @@ def xset_int(name, cls_path, pos):
 # ================= DoCommand graph =================
 ev = g.event("DoCommand", parent=DAC, pos=(0, 0))
 
-# guard: Parameters has >= 1 element (else a bare `dc MFHorses` would parse "" -> 0)
+# guard: Parameters has >= 1 element (a bare invocation with no tokens -> skip, no message)
 lenP = arr_len_str(ev, "Parameters", (300, 250))
 gt = g.call("Greater_IntInt", KML, pos=(550, 250))
 g.wire(lenP, "ReturnValue", gt, "A", exec=False)
@@ -105,7 +105,11 @@ bHas = g.branch(pos=(550, 0))
 g.wire(ev, "then", bHas, "execute", exec=True)
 g.wire(gt, "ReturnValue", bHas, "Condition", exec=False)
 
-# parse + clamp N
+# parse + clamp N. Parameters[0] is the first arg AFTER the command name (Funcom: the name is
+# NOT included), so `dc MFHorses 5` -> Parameters == ["5"]. The v39 "always set to 0" bug was
+# NOT the index -- it was the GetItem.Output -> Conv_StringToInt.InString wire DROPPING on paste
+# (K2Node_GetArrayItem's wildcard Output won't take a paste-link to a typed consumer; the v32
+# lesson). Re-made live via connect_pins in the inject tail below.
 item = get_item_str(ev, "Parameters", 0, (300, 450))
 toInt = g.call("Conv_StringToInt", KSTR, pos=(800, 450))
 g.wire(item, "Output", toInt, "InString", exec=False)
@@ -182,11 +186,31 @@ text = g.render()
 n_authored = text.count("Begin Object Class=")
 bp_ptr, graph_ptr = bp.find_graph(FULL, "EventGraph")
 print("cleared:", bp.clear_graph(bp_ptr, graph_ptr))
-res = bp.inject(FULL, text, graph_name="EventGraph")
+res = bp.inject(FULL, text, graph_name="EventGraph", compile=False, save=False)
 print("inject:", res)
 dropped = n_authored - (res.get("pasted") or 0)
 if dropped:
     print("!! PASTE DROPPED %d NODE(S): authored %d, pasted %d" % (dropped, n_authored, res.get("pasted")))
+
+# K2Node_GetArrayItem's WILDCARD Output pin does NOT take a paste-link to a typed consumer
+# (the v32 lesson, see 02_manager.py:668): GetItem.Output -> Conv_StringToInt.InString silently
+# drops on import -- no orphan, no compile error, InString just defaults to "" -> 0 (the v39
+# "always set to 0" bug). Re-make the wire LIVE via the schema (TryCreateConnection).
+gi_ptr = conv_ptr = None
+for p in bp.graph_nodes(graph_ptr):
+    blk = bp.export_nodes([p])
+    if "K2Node_GetArrayItem" in blk:
+        gi_ptr = p
+    elif 'MemberName="Conv_StringToInt"' in blk:
+        conv_ptr = p
+if gi_ptr and conv_ptr:
+    a = bp.find_pin(gi_ptr, "Output", 1); b = bp.find_pin(conv_ptr, "InString", 0)
+    print("GetItem.Output->Conv.InString wired:", bp.connect_pins(a, b) if (a and b) else "PINS MISSING")
+else:
+    print("!! GetItem/Conv node not found:", bool(gi_ptr), bool(conv_ptr))
+bp.mark_structurally_modified(bp_ptr)
+unreal.BlueprintEditorLibrary.compile_blueprint(bp_obj)
+print("saved:", bool(unreal.EditorAssetLibrary.save_asset(PATH)))
 
 txt = bp.export_nodes(bp.graph_nodes(graph_ptr))
 orphans = re.findall(r'PinName="([^"]+)"[^)]*?bOrphanedPin=True', txt)
@@ -208,5 +232,10 @@ xset_blk = [b for b in re.split(r'(?=Begin Object Class=)', txt) if "K2Node_Vari
 for b in xset_blk:
     selfpin = re.search(r'PinName="self"[^\n]*?(LinkedTo=\([^)]*\))?', b)
     print("xset self linked:", "LinkedTo" in (selfpin.group(0) if selfpin else ""))
+# the v39-bug guard (now general): every wire we authored must survive into the final graph.
+# Catches the GetItem.Output -> Conv.InString drop AND any other silently-dropped wire. Runs
+# AFTER connect_pins, so a handled drop reads clean; an UNhandled one fails the build.
+miss = bp.missing_links(text, txt)
+print("DROPPED LINKS (post-fix):", miss if miss else "(none)")
 print("COMPILE PROBLEMS:", len(problems), problems)
-print("BUILD OK" if not problems and not orphans and not dropped else "BUILD HAS ISSUES")
+print("BUILD OK" if not problems and not orphans and not dropped and not miss else "BUILD HAS ISSUES")

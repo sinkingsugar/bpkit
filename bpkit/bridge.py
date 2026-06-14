@@ -401,10 +401,64 @@ def clear_graph(bp_ptr, graph_ptr, gc=True):
     return len(nodes)
 
 
+def _parse_links(text):
+    """Parse exported/rendered node text into a set of links. Each link is a
+    frozenset of two (nodeName, pinName) endpoints -- so direction and the
+    src/dst double-listing collapse to one entry. Links are matched by NAME
+    (node + pin), NOT PinId: PinIds are regenerated on paste (notably wildcard
+    pins), but node+pin names are stable."""
+    import re
+    pin_name = {}      # (node, pinId) -> pinName
+    pin_links = []     # (node, pinId, [(dstNode, dstPinId), ...])
+    for blk in re.split(r'(?=Begin Object Class=)', text):
+        m = re.search(r'Begin Object Class=\S+ Name="([^"]+)"', blk)
+        if not m:
+            continue
+        node = m.group(1)
+        for pin in re.findall(r'CustomProperties Pin \((.*)\)', blk):
+            pid = (re.search(r'PinId=([0-9A-Fa-f]+)', pin) or [None, None])[1]
+            pn = (re.search(r'PinName="([^"]+)"', pin) or [None, None])[1]
+            if not pid or not pn:
+                continue
+            pin_name[(node, pid)] = pn
+            lm = re.search(r'LinkedTo=\(([^)]*)\)', pin)
+            if lm and lm.group(1).strip():
+                entries = [tuple(e.split()) for e in lm.group(1).split(',')
+                           if len(e.split()) == 2]
+                if entries:
+                    pin_links.append((node, pid, entries))
+    links = set()
+    for node, pid, entries in pin_links:
+        # match pin names CASE-INSENSITIVELY: the engine canonicalizes pin names to the
+        # UFunction's real param casing on reconstruction (authored "Title"/"Message" ->
+        # "title"/"message"), and paste's own FindPin is case-insensitive too.
+        src = (node, pin_name.get((node, pid), "?").lower())
+        for (dnode, dpid) in entries:
+            links.add(frozenset((src, (dnode, pin_name.get((dnode, dpid), "?").lower()))))
+    return links
+
+
+def missing_links(authored_text, final_text):
+    """Links present in `authored_text` (what we rendered/pasted) but ABSENT from
+    `final_text` (what survived paste+compile). Catches wires the engine silently
+    drops on import -- notably K2Node_GetArrayItem's wildcard Output -> a typed
+    consumer (no orphan, no compile error; the consumer just keeps its default,
+    which caused the v39 `dc MFHorses N` always-set-to-0 bug). Returns a sorted
+    list of 'A.pin <-> B.pin' strings. Re-make any drop with connect_pins, then
+    re-check (expect empty). See the getarrayitem-output-paste-drop note."""
+    out = []
+    for link in _parse_links(authored_text) - _parse_links(final_text):
+        ends = sorted(link)
+        a, b = ends[0], ends[-1]
+        out.append("%s.%s <-> %s.%s" % (a[0], a[1], b[0], b[1]))
+    return sorted(out)
+
+
 def inject(bp_path, text, graph_name="EventGraph", precheck=True, compile=True, save=True):
     """High-level write: paste `text` into <bp_path>'s <graph_name>, then (by
     default) compile and save. `bp_path` is a full object path '/Game/X.X'.
-    Returns a result dict. Compile/save use the reflected `unreal` API."""
+    Returns a result dict (incl. `dropped_links`: authored wires that did NOT
+    survive paste -- see missing_links). Compile/save use the reflected `unreal` API."""
     import unreal
     bp_ptr, graph_ptr = find_graph(bp_path, graph_name)
     if not bp_ptr:
@@ -416,6 +470,12 @@ def inject(bp_path, text, graph_name="EventGraph", precheck=True, compile=True, 
     pasted = import_nodes(graph_ptr, text)
     mark_structurally_modified(bp_ptr)
     result = {"ok": True, "pasted": pasted}
+    # surface wires that silently dropped on paste (data only; the caller re-makes
+    # them with connect_pins, then confirms with a post-fix missing_links check).
+    try:
+        result["dropped_links"] = missing_links(text, export_nodes(graph_nodes(graph_ptr)))
+    except Exception as e:
+        result["dropped_links"] = ["<link-check failed: %r>" % e]
     asset_path = bp_path.split(".")[0]
     bp_obj = unreal.load_asset(asset_path)
     if compile:

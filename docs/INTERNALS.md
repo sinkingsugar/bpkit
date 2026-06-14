@@ -186,8 +186,12 @@ What bites:
   fully-typed `TargetArray` (`ContainerType=Array`, `bIsReference`, hidden `self`
   defaulted to `Default__KismetArrayLibrary`), else "Target Array is undetermined"
   compile fail. Indexed read = `K2Node_GetArrayItem` (pins: `Array` / `Dimension 1`
-  / `Output`). `IsValid` won't merge onto a `GetArrayItem.Output` pin via paste —
-  guard with an `int < Array_Length` range test instead.
+  / `Output`). **`GetArrayItem.Output` is a WILDCARD that won't take a paste-link to
+  a TYPED consumer** — the wire silently drops on import (no orphan, no error; the
+  consumer keeps its default). Either avoid the link (guard with an
+  `int < Array_Length` range test instead of `IsValid`), or re-make it live after
+  inject with `connect_pins` (the v39 `dc MFHorses N` arg parsed `""`→0 for exactly
+  this reason: `GetItem.Output → Conv_StringToInt.InString` dropped).
 - **ForEach** is a wildcard macro: a pasted `ForEachLoop` compiles clean but does
   **nothing** unless it has a `ResolvedWildcardType` header **and** its (impure)
   array source is exec-wired into the chain (`bpkit.ir.Graph.foreach` handles
@@ -211,6 +215,16 @@ What bites:
   but **not** a UFUNCTION in Conan's 5.6 — every authored GetPlayerState node had
   silently vanished; the fix was `IsPlayerControlled`, which does reflect. When
   unsure a function exists, probe `hasattr(obj, "snake_case_name")` live first.)
+- **Paste silently DROPS authored WIRES too, not just nodes** (the wildcard
+  `GetArrayItem.Output` case above). The node-count tell can't see a missing *wire*
+  between two surviving nodes, and orphan/compile scans miss it (the unwired input
+  is a legal default). The tell is a **link diff**:
+  `bridge.missing_links(rendered_text, final_export)` returns every wire present in
+  what you pasted but absent from the live graph. `inject` runs it automatically and
+  returns `result["dropped_links"]` (matched by node+pin NAME, **case-insensitive** —
+  the engine recanonicalizes pin casing on reconstruct, e.g. `Title`→`title`). Re-make
+  each drop with `connect_pins`, then re-check (expect empty); fail the build on a
+  non-empty post-fix diff.
 
 ## 9. Function OVERRIDES + cross-set wiring (worked out 2026-06-11, rcon-echo)
 
