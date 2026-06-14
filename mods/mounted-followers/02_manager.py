@@ -458,17 +458,15 @@ g.wire(arr_var("SpareHorses", ir.obj_path(CONAN), (4150, 1170)), "SpareHorses", 
 arr_item_pin(addSpare, "NewItem", ir.obj_path(CONAN))
 g.wire(loopA, "Array Element", addSpare, "NewItem", exec=False)
 g.wire(bOccA, "else", addSpare, "execute", exec=True)    # free horse -> spare pool
-# SPACING: stagger this horse's follow distance by its loop index (index*180) so the horses
-# trail in a line behind the player instead of all clustering on one follow point.
-idxMul = g.call("Multiply_IntInt", KML, pos=(4400, 1180))
-g.wire(loopA, "Array Index", idxMul, "A", exec=False)
-g.typed_input(idxMul, "B", "180", "int")
-idxF = g.call("Conv_IntToDouble", KML, pos=(4600, 1180))
-g.wire(idxMul, "ReturnValue", idxF, "InInt", exec=False)
-setDist = g.call("SetAdditionalFollowDistance", CONAN, pos=(4400, 950))
-g.wire(loopA, "Array Element", setDist, "self", exec=False)
-g.wire(idxF, "ReturnValue", setDist, "NewFollowDistance", exec=False)
-g.wire(addSpare, "then", setDist, "execute", exec=True)
+# v42: REMOVED the per-spare-horse follow-distance stagger (was SetAdditionalFollowDistance =
+# index*180 while mounted, reset to 0 when on foot -- see the unmounted pass below). It was
+# purely cosmetic spacing (fan the spare horses into a trailing line) but it CLOBBERED the
+# player's own follow-distance setting: AdditionalFollowDistance is exactly the knob the in-game
+# follow-distance control drives, and the unmounted reset forced it to 0 on every horse follower
+# every tick (10 Hz), so any distance the player picked snapped back to the base (~5m). Seated
+# followers are actor-attached to their horse, so dropping the stagger only means the spare horses
+# follow at the player's chosen distance instead of a mod-imposed line. addSpare's exec just ends
+# the loop-body chain (the foreach iterates internally).
 
 # Pass B: every humanoid follower. SEATED (attach parent is a mountable horse) -> the per-tick
 # MAINTAIN (the v31/v32 leash fix: Conan's follower catch-up AI re-enables a seated rider's
@@ -620,8 +618,9 @@ chain.then(setHC)
 if DEBUG:
     chain.then(dbg("stowed a rider onto a spare horse", (6250, 1850)))
 
-# NOT MOUNTED housekeeping pass over the followers. Horses: reset the staggered follow
-# distance (the stagger otherwise outlives the ride). Humanoids: STATUE RESCUE -- if a horse
+# NOT MOUNTED housekeeping pass over the followers. Horses: nothing (v42 removed the
+# follow-distance stagger reset -- it clobbered the player's own setting). Humanoids: STATUE
+# RESCUE -- if a horse
 # died mid-ride its rider auto-detached but kept our stow freeze (MOVE_None, no collision);
 # while the owner stayed mounted the stow pass re-seats it, but once the owner is on foot
 # nothing else would unfreeze it (the global sweep below only handles SEATED bodies). So an
@@ -644,12 +643,9 @@ g.wire(loopDist, "Array Element", mtblD0, "self", exec=False)
 bMtblD0 = g.branch(pos=(2800, 3050))
 g.wire(loopDist, "LoopBody", bMtblD0, "execute", exec=True)
 g.wire(mtblD0, "ReturnValue", bMtblD0, "Condition", exec=False)
-convD0 = g.call("Conv_IntToDouble", KML, pos=(3050, 3280))
-g.typed_input(convD0, "InInt", "0", "int")
-setDist0 = g.call("SetAdditionalFollowDistance", CONAN, pos=(3050, 3050))
-g.wire(loopDist, "Array Element", setDist0, "self", exec=False)
-g.wire(convD0, "ReturnValue", setDist0, "NewFollowDistance", exec=False)
-g.wire(bMtblD0, "then", setDist0, "execute", exec=True)
+# v42: the horse branch (bMtblD0 "then") used to reset SetAdditionalFollowDistance to 0 here --
+# removed (see Pass A). A horse follower now needs no unmounted housekeeping, so "then" dead-ends;
+# only the humanoid branch ("else") does work (the statue rescue below).
 # humanoid -> unattached AND frozen (MOVE_None)? -> give it movement + collision back
 getParD0 = g.call("GetAttachParentActor", ACTOR, pos=(3050, 3450))
 g.wire(loopDist, "Array Element", getParD0, "self", exec=False)

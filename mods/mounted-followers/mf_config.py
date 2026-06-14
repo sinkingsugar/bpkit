@@ -133,7 +133,15 @@ CUSTOM_CMD_TABLE = "/Game/Systems/Cheats/CustomConsoleCommandsDataTable"  # game
 #      SweepRun = AnyMounted OR WasMounted (1-tick trailing for dismount/orphan restore). Player-find
 #      via GameState.PlayerArray. Net: an idle DEDICATED server does ZERO GetAllActorsOfClass; clients
 #      keep animating everyone (no trade-off). Listen server fully correct (host = render + authority).
-MGR_VERSION = 41
+# 42 = REMOVED follow-distance management entirely. The mod set SetAdditionalFollowDistance =
+#      index*180 on each spare horse while mounted (cosmetic: fan the posse into a trailing line)
+#      and reset it to 0 on every horse follower when on foot. But AdditionalFollowDistance is the
+#      same knob Conan's in-game follow-distance control drives, and the unmounted reset ran every
+#      tick (10 Hz) on the server -> any distance the player picked was clobbered back to the base
+#      (~5m) within a frame. It was a solution looking for a problem; seated followers are actor-
+#      attached to their horse so spacing them was the only effect. Dropped both spots -> spare
+#      horses now follow at the player's chosen distance; the player's follow-distance setting sticks.
+MGR_VERSION = 42
 
 # Seated idle pose played on a stowed rider (full object path).
 IDLE_ANIM = ("/Game/Characters/humans/animations/mounted/Horse/"

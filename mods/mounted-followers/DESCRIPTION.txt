@@ -14,8 +14,8 @@ swing down beside you, ready to spill blood on foot.
 HOW IT WORKS
 - Bring your followers AND enough spare (tamed, following) horses.
 - Mount up. Every humanoid follower claims their own horse and saddles up.
-- Spare horses trail behind you in a staggered line - a column of riders,
-  not a horse-pile.
+- Ride out and the whole retinue rides with you, following at whatever
+  distance you've set them to - the mod leaves your follow-distance alone.
 - Dismount and the whole retinue dismounts with you.
 
 FEATURES
