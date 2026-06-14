@@ -116,7 +116,25 @@ CUSTOM_CMD_TABLE = "/Game/Systems/Cheats/CustomConsoleCommandsDataTable"  # game
 #        a UDataActorCommand registered by merging DT_MF_Commands into the game's
 #        CustomConsoleCommandsDataTable at BeginPlay). The command applies to all players live
 #        (no restart) and persists N to a BP_MF_SaveGame slot, reloaded on each per-player init.
-MGR_VERSION = 39
+# 40 = PERF: stop the blind per-tick GetAllActorsOfClass(ConanCharacter) sweep (O(every player+thrall
+#      +NPC), ran on server AND every client even when nobody was riding -- a server-FPS cost separate
+#      from the v39 BT fix). Now: players are enumerated via GameState.PlayerArray (O(players)); the
+#      per-player pass (caps/detect/stow/restore) is cheap + runs every tick; the expensive
+#      GetAllActorsOfClass cosmetic + global sweep gate on RunCosmetic (=AnyMounted OR WasMounted, a
+#      1-tick trailing run so the cosmetic anim-reset still fires the tick after the last dismount).
+#      Server sets AnyMounted in the per-player detect; clients via a cheap local-player follower scan
+#      (no replication available). Idle ticks (nobody riding) now do ZERO GetAllActorsOfClass.
+#      Trade-off: a client only seat-animates OTHER players' followers while ITS local player is also
+#      riding. (NEVER SHIPPED -- that trade-off was rejected; see v41.)
+# 41 = v40 perf WITHOUT the MP trade-off. The COSMETIC loop runs on every RENDER instance (clients +
+#      listen host + SP), UNGATED -- so each re-derives EVERY player's seated-follower pose (the mod
+#      never replicated custom state; it recomputes per-instance from native attach/get_rider). Only a
+#      *dedicated* server skips the cosmetic (is_dedicated_server -- no render, anim invisible + non-
+#      replicated). The server's global restore sweep gets its OWN GetAllActorsOfClass, gated on
+#      SweepRun = AnyMounted OR WasMounted (1-tick trailing for dismount/orphan restore). Player-find
+#      via GameState.PlayerArray. Net: an idle DEDICATED server does ZERO GetAllActorsOfClass; clients
+#      keep animating everyone (no trade-off). Listen server fully correct (host = render + authority).
+MGR_VERSION = 41
 
 # Seated idle pose played on a stowed rider (full object path).
 IDLE_ANIM = ("/Game/Characters/humans/animations/mounted/Horse/"

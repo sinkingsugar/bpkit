@@ -31,6 +31,8 @@ KSL = "/Script/Engine.KismetSystemLibrary"
 KML = "/Script/Engine.KismetMathLibrary"
 KTL = "/Script/Engine.KismetTextLibrary"
 DTAB = "/Script/Engine.DataTable"
+GAMESTATE = "/Script/Engine.GameStateBase"   # has PlayerArray (cheap player enumeration; v40)
+PSTATE = "/Script/Engine.PlayerState"
 SG_CLS_PATH = "%s/%s.%s_C" % (PKG, MOD.SAVEGAME, MOD.SAVEGAME)   # BP_MF_SaveGame generated class
 MODCTRL = unreal.ModController.static_class().get_path_name()    # ModController (declares MergeDataTables)
 DT_CMD_OBJ = MOD.full(MOD.CMD_TABLE)                              # our 1-row command table (object path)
@@ -60,6 +62,18 @@ intt = unreal.BlueprintEditorLibrary.get_basic_type_by_name("int")
 # completion per element, like PlayerMount).
 for vn in ("MgrVersion", "HumanoidCounter", "MountLimit"):
     unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, vn, intt)  # no-ops if exists
+# v40 PERF GATE (revised -- no MP trade-off):
+#  - The COSMETIC loop runs on every RENDER-capable instance (clients + listen host + SP), ungated, so
+#    each client always re-derives EVERYONE's seated-follower pose (the mod never replicated custom
+#    state -- it recomputes per-instance from native attach/get_rider replication). Only a *dedicated*
+#    server (no render, anim invisible + non-replicated) skips it -> is_dedicated_server gate.
+#  - The server's expensive GLOBAL SWEEP (its own GetAllActorsOfClass) gates on SweepRun = AnyMounted
+#    OR WasMounted (1-tick trailing so a just-dismounted/orphaned seat is still restored the tick after
+#    the last mount). AnyMounted is set in the server per-player GetRider detect. WasMounted = last
+#    tick's AnyMounted. So an idle DEDICATED server does ZERO GetAllActorsOfClass.
+_boolt = unreal.BlueprintEditorLibrary.get_basic_type_by_name("bool")
+for vn in ("AnyMounted", "SweepRun", "WasMounted"):
+    unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, vn, _boolt)
 conan_ref = unreal.BlueprintEditorLibrary.get_object_reference_type(unreal.ConanCharacter.static_class())
 # PlayerMount: per-player-iteration SCRATCH -- the horse the CURRENT player is riding (found by
 # get_rider scan; null when on foot). Safe as a member var because the player ForEach body runs
@@ -316,13 +330,30 @@ g.wire(meshMC, "Mesh", amResetMC, "self", exec=False)
 g.wire(bAttMC, "else", amResetMC, "execute", exec=True)
 
 tick = g.event("ReceiveTick")
-# Manager is Always Relevant, so it exists + ticks on every client. The cosmetic seat loop above is
-# NON-gated (runs on every instance); the gameplay below is server-only (HasAuthority).
-haz = g.call("HasAuthority", ACTOR, pos=(-250, 0))
-bAuth = g.branch(pos=(-50, 0))
-g.wire(tick, "then", gaC, "execute", exec=True)            # NON-GATED cosmetic seat loop (every instance)
-g.wire(loopMC, "Completed", bAuth, "execute", exec=True)   # THEN the server-gated per-player pass
+# v40 PERF: the OLD tick blindly ran GetAllActorsOfClass(ConanCharacter) -- O(every player + thrall +
+# NPC on the server) -- every tick on every instance, even when nobody was riding. Now: reset the gate,
+# run the cheap per-player pass (server, PlayerArray-driven) / a cheap local mount detect (client) to
+# set AnyMounted, and ONLY THEN, if RunCosmetic, do the expensive GetAllActorsOfClass cosmetic + sweep.
+resetAM = g.var_set("AnyMounted", "bool", pos=(-700, 0)); resetAM.pin("AnyMounted").literal("false")
+g.wire(tick, "then", resetAM, "execute", exec=True)
+haz = g.call("HasAuthority", ACTOR, pos=(-500, 0))
+bAuth = g.branch(pos=(-300, 0))
 g.wire(haz, "ReturnValue", bAuth, "Condition", exec=False)
+
+# v40 (revised -- no MP trade-off): the COSMETIC runs on every RENDER-capable instance (clients +
+# listen host + SP), ungated, so each re-derives EVERY seated follower's pose. Only a *dedicated*
+# server skips it (no render; the anim is invisible + non-replicated). Both paths then run the
+# server pass (bAuth). gaC -> loopMC is wired at the cosmetic-loop definition above.
+dds = g.call("IsDedicatedServer", KSL, pos=(-650, -250))   # KismetSystemLibrary, not GameplayStatics
+ddsBranch = g.branch(pos=(-450, -250))
+g.wire(dds, "ReturnValue", ddsBranch, "Condition", exec=False)
+g.wire(resetAM, "then", ddsBranch, "execute", exec=True)
+g.wire(ddsBranch, "else", gaC, "execute", exec=True)        # render -> cosmetic
+g.wire(loopMC, "Completed", bAuth, "execute", exec=True)    # cosmetic done -> server pass
+g.wire(ddsBranch, "then", bAuth, "execute", exec=True)      # dedicated -> skip cosmetic, server pass
+
+# (v40 revised: no client-side mount detect needed -- clients run the cosmetic ungated via the
+# is_dedicated_server branch above, so they always animate every player's seated followers.)
 
 # NOTE: `dc MFHorses N` registration (merging our command row into the game's
 # CustomConsoleCommandsDataTable) is NOT done here. MergeDataTables is BlueprintProtected and ONLY
@@ -342,22 +373,27 @@ g.wire(haz, "ReturnValue", bAuth, "Condition", exec=False)
 clrActive = arr_fn("Array_Clear", ir.obj_path(CONAN), (50, 350))
 g.wire(arr_var("ActiveSeats", ir.obj_path(CONAN), (50, 550)), "ActiveSeats", clrActive, "TargetArray", exec=False)
 g.wire(bAuth, "then", clrActive, "execute", exec=True)   # per-tick: reset the legit-seat set
-loopPS = g.foreach(ACTOR, pos=(250, 200))
-g.wire(gaC, "OutActors", loopPS, "Array", exec=False)
+# v40 PERF: enumerate players via GameState.PlayerArray (O(players)) instead of walking the whole
+# GetAllActorsOfClass(ConanCharacter) result (O(every player+thrall+NPC)). The PlayerArray entries ARE
+# the players, so the old IsPlayerControlled filter is gone. The whole per-player pass (caps/detect/
+# stow/restore) now uses only follower lists -> cheap -> runs every tick (un-gated by mount state, so
+# new players still get their cap init). Only the cosmetic + global sweep gate on RunCosmetic.
+gsGet = g.call("GetGameState", GS, pos=(0, 200))
+paGet = g.node("K2Node_VariableGet",
+    ['VariableReference=(MemberName="PlayerArray",MemberParent="%s",bSelfContext=False)' % ir.obj_path(GAMESTATE)],
+    base="VariableGet", pos=(220, 380))
+_psp = paGet.pin("self"); _psp.dir = "EGPD_Input"; type_obj(_psp, GAMESTATE)
+_pap = paGet.pin("PlayerArray"); _pap.dir = "EGPD_Output"; type_obj(_pap, PSTATE)
+_pap.set("PinType.ContainerType", "Array")
+g.wire(gsGet, "ReturnValue", paGet, "self", exec=False)
+loopPS = g.foreach(PSTATE, pos=(250, 200))
+g.wire(paGet, "PlayerArray", loopPS, "Array", exec=False)
 g.wire(clrActive, "then", loopPS, "Exec", exec=True)
+psPawn = g.call("GetPawn", PSTATE, pos=(450, 400))
+g.wire(loopPS, "Array Element", psPawn, "self", exec=False)
 castP = cast_node(CONAN, (500, 200))
-g.wire(loopPS, "Array Element", castP, "Object", exec=False)
+g.wire(psPawn, "ReturnValue", castP, "Object", exec=False)
 g.wire(loopPS, "LoopBody", castP, "execute", exec=True)
-# PLAYER GATE: IsPlayerControlled -- server-accurate, and this pass is HasAuthority-gated.
-# Do NOT use GetPlayerState here: it is not a UFUNCTION in this Conan build, and the paste
-# SILENTLY DROPS unresolvable CallFunction nodes (no orphan, no compile error -- IsValid then
-# reads an unwired pin = null = false), which killed the whole per-player pass in v34/v35.
-# Caught 2026-06-10 via live PIE probe + the authored-vs-pasted count check at the bottom.
-isPl = g.call("IsPlayerControlled", "/Script/Engine.Pawn", pos=(600, 400))
-g.wire(castP, "AsConan Character", isPl, "self", exec=False)
-bIsPl = g.branch(pos=(750, 200))
-g.wire(castP, "then", bIsPl, "execute", exec=True)
-g.wire(isPl, "ReturnValue", bIsPl, "Condition", exec=False)
 P = (castP, "AsConan Character")   # this iteration's player ConanCharacter
 
 # this player's followers (pure calls -> data-only fan-out to every loop below re-evaluates
@@ -374,7 +410,7 @@ g.wire(arr_var("InitializedPlayers", ir.obj_path(CONAN), (950, -180)), "Initiali
 arr_item_pin(hasInit, "ItemToFind", ir.obj_path(CONAN))
 g.wire(P[0], P[1], hasInit, "ItemToFind", exec=False)
 bInitP = g.branch(pos=(1200, 200))
-g.wire(bIsPl, "then", bInitP, "execute", exec=True)
+g.wire(castP, "then", bInitP, "execute", exec=True)   # PlayerArray entries are already players
 g.wire(hasInit, "ReturnValue", bInitP, "Condition", exec=False)
 prev, prev_pin = bInitP, "else"   # not yet initialized -> SET this player's Mount cap
 # v39: MOUNT-ONLY + configurable. Read the limit N from the SaveGame slot (does-exist ? loaded :
@@ -460,9 +496,12 @@ g.wire(isMounted, "ReturnValue", bMountedP, "Condition", exec=False)
 # Pass O: collect horses ALREADY carrying a seated humanoid, so the spare pool can't
 # double-book a horse on later ticks (a stowed rider doesn't register as the horse's "rider",
 # so GetRider can't exclude these).
+# v40: this player is mounted -> raise the gate so the cosmetic + sweep run this tick.
+setAMtrue = g.var_set("AnyMounted", "bool", pos=(2500, 250)); setAMtrue.pin("AnyMounted").literal("true")
+g.wire(bMountedP, "then", setAMtrue, "execute", exec=True)
 clrOcc = arr_fn("Array_Clear", ir.obj_path(CONAN), (2550, 300))
 g.wire(arr_var("OccupiedHorses", ir.obj_path(CONAN), (2550, 520)), "OccupiedHorses", clrOcc, "TargetArray", exec=False)
-g.wire(bMountedP, "then", clrOcc, "execute", exec=True)
+g.wire(setAMtrue, "then", clrOcc, "execute", exec=True)
 loopO = g.foreach(CONAN, pos=(2800, 300))
 g.wire(getFolP, "ReturnValue", loopO, "Array", exec=False)
 g.wire(clrOcc, "then", loopO, "Exec", exec=True)
@@ -760,8 +799,25 @@ if DEBUG:
 # dismount). One-shot by construction: restored -> no longer seated, so the plain AnimBP-mode
 # call fires exactly once (no v28 every-tick-reinit recurrence). ===
 loopG = g.foreach(ACTOR, pos=(250, 3700))
-g.wire(gaC, "OutActors", loopG, "Array", exec=False)
-g.wire(loopPS, "Completed", loopG, "Exec", exec=True)
+# v40 (revised): the server's global restore sweep gets its OWN GetAllActorsOfClass, GATED on
+# SweepRun = AnyMounted OR WasMounted (1-tick trailing so a just-dismounted/orphaned seat is still
+# restored the tick after the last mount). So an idle dedicated server does ZERO GetAllActorsOfClass.
+orSweep = g.call("BooleanOR", KML, pos=(-150, 3450))
+g.wire(g.var_get("AnyMounted", "bool", pos=(-350, 3400)), "AnyMounted", orSweep, "A", exec=False)
+g.wire(g.var_get("WasMounted", "bool", pos=(-350, 3500)), "WasMounted", orSweep, "B", exec=False)
+setSweepRun = g.var_set("SweepRun", "bool", pos=(-150, 3550))
+g.wire(orSweep, "ReturnValue", setSweepRun, "SweepRun", exec=False)
+g.wire(loopPS, "Completed", setSweepRun, "execute", exec=True)   # server per-player pass done
+setWasG = g.var_set("WasMounted", "bool", pos=(40, 3550))
+g.wire(g.var_get("AnyMounted", "bool", pos=(-150, 3680)), "AnyMounted", setWasG, "WasMounted", exec=False)
+g.wire(setSweepRun, "then", setWasG, "execute", exec=True)
+sweepGate = g.branch(pos=(230, 3450))
+g.wire(g.var_get("SweepRun", "bool", pos=(40, 3380)), "SweepRun", sweepGate, "Condition", exec=False)
+g.wire(setWasG, "then", sweepGate, "execute", exec=True)
+gaC_s = get_all_actors(CONAN, (430, 3550))   # the sweep's own GAAC -- only runs when SweepRun
+g.wire(sweepGate, "then", gaC_s, "execute", exec=True)
+g.wire(gaC_s, "OutActors", loopG, "Array", exec=False)
+g.wire(gaC_s, "then", loopG, "Exec", exec=True)
 castG = cast_node(CONAN, (500, 3700))
 g.wire(loopG, "Array Element", castG, "Object", exec=False)
 g.wire(loopG, "LoopBody", castG, "execute", exec=True)

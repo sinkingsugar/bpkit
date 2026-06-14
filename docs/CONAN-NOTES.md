@@ -85,6 +85,39 @@ fully **reflected** to Python, which is how it was audited.
   recipe's freeze bullet. **Triggers in the cooked game, rarely in PIE** (PIE's small
   always-loaded world keeps followers close enough to never trip it).
 
+### Manager tick performance — don't `GetAllActorsOfClass` every tick (v41, 2026-06-13)
+- **`GetAllActorsOfClass(ConanCharacter)` is O(every player + thrall + NPC)** and runs the whole
+  collection each call; doing it per tick (×3 iterations: cosmetic loop + player-find + global sweep),
+  on the server AND every client, **even when nobody is riding**, is a real server-FPS cost that scales
+  with total population, not riders (the AstroCat "still has FPS issues" report). It works (quoted
+  `ActorClass` default — see Packaging), it's just the wrong tool for a hot path.
+- **Enumerate players cheaply** via `GameState.PlayerArray` (`GetGameState` → `PlayerArray` VariableGet,
+  O(players)) → `PlayerState.GetPawn`. PlayerArray entries ARE players (no `IsPlayerControlled` filter
+  needed). The per-player passes already use each player's follower list (O(followers)), so once the
+  player-find is off `PlayerArray` the whole per-player pass is cheap and can run every tick (keep cap
+  init un-gated, or new un-mounted players never get the cap raised to claim horses → deadlock).
+- **Split the two all-actor consumers and gate each by ROLE, not by a replicated flag** (BP variable
+  replication is NOT exposable via `BlueprintEditorLibrary` — no setter — so there's no server→client
+  gate flag to lean on; and the mod never replicated custom state, it recomputes per-instance from
+  native attach/`get_rider` replication):
+  - **COSMETIC loop** (applies the seated single-node anim): runs on every RENDER-capable instance —
+    clients + listen host + SP — **ungated**, so each instance re-derives EVERY player's seated-follower
+    pose. Only a **dedicated server skips it** (`KismetSystemLibrary.IsDedicatedServer` — no render, the
+    anim is invisible there and doesn't replicate). It gets its OWN `GetAllActorsOfClass`, run only in
+    the not-dedicated branch.
+  - **GLOBAL restore sweep** (server-authoritative cleanup): gets its OWN `GetAllActorsOfClass`, gated on
+    `SweepRun = AnyMounted OR WasMounted` (a 1-tick trailing so a just-dismounted / orphaned seat is
+    still restored the tick after the last mount). `AnyMounted` is set in the server per-player
+    `GetRider` detect.
+  - Result: an **idle dedicated server does ZERO `GetAllActorsOfClass`** (cosmetic skipped, sweep gated
+    off) — the server-FPS win — while clients/listen-host keep full visuals with no trade-off.
+- **★ DON'T gate the CLIENT cosmetic on "is the local player mounted"** (the rejected v40 approach): the
+  cosmetic is exactly what draws OTHER players' seated followers on your screen, so gating it locally
+  means you only see others' followers while you're also riding — a visible MP glitch. Gate the client
+  cosmetic only by render-capability (`is_dedicated_server`), never by local mount state.
+  Verified in PIE: v41 manager spawns, idle → `AnyMounted`/`SweepRun` false (sweep skipped),
+  `is_dedicated_server`=false in PIE so the cosmetic runs.
+
 ## Mod-configurable values — console commands, SaveGame, ServerSettings (2026-06-13)
 
 How a **content-only** mod (no C++) lets a server admin / SP player change a value at runtime, and
