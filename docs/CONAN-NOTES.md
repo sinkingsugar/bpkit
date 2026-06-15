@@ -46,6 +46,25 @@ fully **reflected** to Python, which is how it was audited.
   and is true-for-all at mount time).
 - `GetEmbeddedSaddleId()` reads `None` even while a player is actively riding —
   **not** a "ridden/has-saddle" signal. Don't gate on it.
+- **Base-game log spam: `"Attempted to access BP_MountInput_C_0 via property
+  CallFunc_GetMountInput_ReturnValue, but ... not valid (pending kill or garbage)"`
+  is NOT a mod bug** — it's stock `BasePlayerChar`. Source: `BasePlayerChar` →
+  function `CameraModeStateMachine` → collapsed graph `CheckRiding`. The normal
+  riding-camera path is a *pure* chain `GetMountInput()` → `GetCurrentTargetSpeed()`
+  (called **on** the mount input) → `Map_Find()` → `SwitchCameraMode()`, and
+  `GetMountInput()` is **never IsValid-checked** before the deref. When it returns
+  the torn-down `BP_MountInput` (the recreate-each-mount-cycle window above, or a
+  stale ref), `GetCurrentTargetSpeed` derefs a dead object. The error is *reported
+  at `SwitchCameraMode`* only because the whole chain is pure → the VM evaluates it
+  at the impure consumer, not where the bad node sits. Harmless (returns the
+  `"Stationary"` default; camera still works), just spammy around dismount.
+  Funcom already tracks the area — in-graph dev comments read *"Remember to update
+  IsRidingCameraMode"* and *"...Find fails otherwise, see EXART-1715."* Don't
+  "fix" it: `BasePlayerChar` is a **base asset**; overriding it breaks the
+  pure-logic-mod promise and cooks wrong. Mounted-followers never touches this
+  path (we detect via `get_rider`, never `GetMountInput`); it only surfaces more
+  because testing a mount mod means more mount/dismount cycles. (live-traced
+  2026-06-14)
 
 ## Followers
 
@@ -84,6 +103,21 @@ fully **reflected** to Python, which is how it was audited.
   undoes a *one-shot* movement freeze on a stowed/seated follower — see the cosmetic-rider
   recipe's freeze bullet. **Triggers in the cooked game, rarely in PIE** (PIE's small
   always-loaded world keeps followers close enough to never trip it).
+  - **Fighting catch-up per-tick JAMS the follower AI — stow and restore MUST be symmetric** (v43,
+    AstroCat 2026-06-15). The seated-follower freeze re-pins `MOVE_None` *every tick* to beat the
+    leash re-enable. That keeps the catch-up state machine perpetually mid-`wait_for_catch_up_time`:
+    it never registers a successful catch-up. If restore only re-enables movement/collision/anim and
+    **doesn't reset that AI state**, the follower comes off the saddle **inert — won't follow orders,
+    won't attack** (cooked/real-server only; the leash never trips in PIE so it passes every PIE test).
+    Fix = call the game's own catch-up exit on restore: **`try_resume_from_catch_up_time()`**
+    (counterpart to `wait_for_catch_up_time`) + **`cancel_any_forced_movement()`** (clears an in-flight
+    catch-up teleport). Both are `ConanCharacter` methods, BlueprintCallable, server-side, and are
+    safe no-ops when the follower isn't actually catching up (so call them on every restored follower,
+    one-shot per dismount). General rule: **anything you induce on a follower while seated must have a
+    matching undo on restore** — movement mode, collision, anim, *and* AI/catch-up state.
+  - Heavier escalation if a follower still won't re-engage: re-issue the follow order on the dismount
+    edge via `ThrallSystemComponent.server_set_following(follower, true, feedback=False)` (`feedback=False`
+    = no command sound/spam). Edge-trigger it — it's NOT safe per-tick.
 
 ### Manager tick performance — don't `GetAllActorsOfClass` every tick (v41, 2026-06-13)
 - **`GetAllActorsOfClass(ConanCharacter)` is O(every player + thrall + NPC)** and runs the whole

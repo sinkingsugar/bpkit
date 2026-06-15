@@ -141,7 +141,16 @@ CUSTOM_CMD_TABLE = "/Game/Systems/Cheats/CustomConsoleCommandsDataTable"  # game
 #      (~5m) within a frame. It was a solution looking for a problem; seated followers are actor-
 #      attached to their horse so spacing them was the only effect. Dropped both spots -> spare
 #      horses now follow at the player's chosen distance; the player's follow-distance setting sticks.
-MGR_VERSION = 42
+# 43 = FIX follower inactivity after dismount (AstroCat 2026-06-15). The stow/restore pair was
+#      ASYMMETRIC: stow + the per-tick MOVE_None maintain re-pin (v32 leash fix) provoke Conan's
+#      catch-up/leash AI every tick while a follower is seated, jamming it mid-catch-up; restore only
+#      un-did movement/collision/anim and never reset that AI state -- so after dismount the follower
+#      wouldn't follow orders or attack. Added the missing half to BOTH restore paths (global sweep +
+#      statue rescue): TryResumeFromCatchUpTime (the game's own catch-up exit, counterpart to
+#      WaitForCatchUpTime) + CancelAnyForcedMovement (clears an in-flight catch-up teleport). Server-
+#      side, one-shot per dismount. Cooked/real-server ONLY -- the leash never trips in PIE, so verify
+#      in a cook, not PIE.
+MGR_VERSION = 43
 
 # Seated idle pose played on a stowed rider (full object path).
 IDLE_ANIM = ("/Game/Characters/humans/animations/mounted/Horse/"

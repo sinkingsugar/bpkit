@@ -677,9 +677,17 @@ colD0 = bare_call("SetActorEnableCollision", ACTOR, (4050, 3050))
 set_default(colD0, "bNewActorEnableCollision", "true", "bool")
 g.wire(loopDist, "Array Element", colD0, "self", exec=False)
 g.wire(walkD0, "then", colD0, "execute", exec=True)
+# v43: same AI-state reset as the global sweep (see there) -- the orphan/statue-rescue path also
+# needs the follower un-jammed from catch-up, not just re-enabled movement + collision.
+resumeD0 = bare_call("TryResumeFromCatchUpTime", CONAN, (4300, 3050))
+g.wire(loopDist, "Array Element", resumeD0, "self", exec=False)
+g.wire(colD0, "then", resumeD0, "execute", exec=True)
+cancelD0 = bare_call("CancelAnyForcedMovement", CONAN, (4550, 3050))
+g.wire(loopDist, "Array Element", cancelD0, "self", exec=False)
+g.wire(resumeD0, "then", cancelD0, "execute", exec=True)
 if DEBUG:
-    dbgResc = dbg("statue rescue (unfroze a stranded rider)", (4300, 3050))
-    g.wire(colD0, "then", dbgResc, "execute", exec=True)
+    dbgResc = dbg("statue rescue (unfroze a stranded rider)", (4800, 3050))
+    g.wire(cancelD0, "then", dbgResc, "execute", exec=True)
 
 # === GLOBAL RESTORE SWEEP (after the player loop): any humanoid still seated on a horse NO
 # mounted player legitimized this tick (ActiveSeats) gets restored. ONE restore path covers
@@ -759,8 +767,21 @@ colG = bare_call("SetActorEnableCollision", ACTOR, (3000, 3700))
 set_default(colG, "bNewActorEnableCollision", "true", "bool")
 g.wire(castG, "AsConan Character", colG, "self", exec=False)
 chainG.then(colG)
+# v43: RESET THE FOLLOWER'S AI STATE -- the missing half of the stow/restore pairing. The per-tick
+# MOVE_None maintain re-pin (the v32 leash fix) fights Conan's catch-up/leash AI every tick while a
+# follower is seated, which leaves it jammed mid-catch-up; restoring movement/collision/anim does
+# NOT clear that. TryResumeFromCatchUpTime is the game's own exit from the catch-up state (the
+# counterpart to WaitForCatchUpTime, which we effectively trigger); CancelAnyForcedMovement clears
+# any in-flight catch-up teleport/forced-move. Without these the follower won't follow orders or
+# attack after dismount (AstroCat 2026-06-15; cooked/real-server only -- the leash never trips in PIE).
+resumeG = bare_call("TryResumeFromCatchUpTime", CONAN, (3250, 3550))
+g.wire(castG, "AsConan Character", resumeG, "self", exec=False)
+chainG.then(resumeG)
+cancelG = bare_call("CancelAnyForcedMovement", CONAN, (3500, 3550))
+g.wire(castG, "AsConan Character", cancelG, "self", exec=False)
+chainG.then(cancelG)
 if DEBUG:
-    chainG.then(dbg("sweep-restored a rider (dismount/orphan)", (3250, 3700)))
+    chainG.then(dbg("sweep-restored a rider (dismount/orphan)", (3750, 3700)))
 
 # Build the EventGraph through the harness: clear + inject (auto-relinks any wire the engine
 # drops on paste -- the GetArrayItem.Output class) + compile + save + full scan (dropped
