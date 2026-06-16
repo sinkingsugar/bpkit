@@ -134,11 +134,20 @@ fights only when directly hit, "self-heals" once it eventually re-aggros (AstroC
 - v44 — `reset_all_behavior_subtrees_to_default()` on restore.
 - v45 — **the game's own push/pop**, replacing the guesses:
   - **STOW (push):** `ConanAttackerAIController.set_should_not_leash(true)` — the leash never
-    trips while seated → catch-up never engages → nothing to jam (and the per-tick re-pin
-    becomes belt-and-suspenders).
+    trips while seated → catch-up never engages → nothing to jam.
   - **RESTORE (pop):** `set_should_not_leash(false)` + `finish_leashing()` — re-enable and run
     the game's own clean leash-exit (the `BTTask_FinishLeashing` path).
 
+**The v32 per-tick maintain pass STAYS — it is not redundant after the leash gate.** It
+re-pins `MOVE_None` *and* re-asserts the saddle relative transform every tick, and the
+game **teleports thralls/horses on its own** (catch-up teleport, `should_teleport_when_following`,
+server position corrections) regardless of leashing. The transform re-assert is what snaps a
+teleported seated follower back onto the saddle; the `MOVE_None` re-pin catches any movement-mode
+flip a teleport/correction brings. So the maintain pass is load-bearing for position recovery,
+*independent* of the AI jam. v45's leash gate is **purely additive**: it kills the leash-induced
+AI jam; the maintain pass keeps doing its real (teleport/position) job. Do NOT "simplify" it away.
+
 General rule (holds for any "I parked an NPC's AI" mod): **don't hand-list undos —
 disable the offending subsystem with its own gate on the way in, and call the game's own
-finisher on the way out.** Symmetric, and immune to us forgetting a piece.
+finisher on the way out.** Symmetric, and immune to us forgetting a piece. (But keep the
+mechanical freeze/re-assert that defends against the engine moving the actor underneath you.)
