@@ -46,6 +46,25 @@ fully **reflected** to Python, which is how it was audited.
   and is true-for-all at mount time).
 - `GetEmbeddedSaddleId()` reads `None` even while a player is actively riding —
   **not** a "ridden/has-saddle" signal. Don't gate on it.
+- **Base-game log spam: `"Attempted to access BP_MountInput_C_0 via property
+  CallFunc_GetMountInput_ReturnValue, but ... not valid (pending kill or garbage)"`
+  is NOT a mod bug** — it's stock `BasePlayerChar`. Source: `BasePlayerChar` →
+  function `CameraModeStateMachine` → collapsed graph `CheckRiding`. The normal
+  riding-camera path is a *pure* chain `GetMountInput()` → `GetCurrentTargetSpeed()`
+  (called **on** the mount input) → `Map_Find()` → `SwitchCameraMode()`, and
+  `GetMountInput()` is **never IsValid-checked** before the deref. When it returns
+  the torn-down `BP_MountInput` (the recreate-each-mount-cycle window above, or a
+  stale ref), `GetCurrentTargetSpeed` derefs a dead object. The error is *reported
+  at `SwitchCameraMode`* only because the whole chain is pure → the VM evaluates it
+  at the impure consumer, not where the bad node sits. Harmless (returns the
+  `"Stationary"` default; camera still works), just spammy around dismount.
+  Funcom already tracks the area — in-graph dev comments read *"Remember to update
+  IsRidingCameraMode"* and *"...Find fails otherwise, see EXART-1715."* Don't
+  "fix" it: `BasePlayerChar` is a **base asset**; overriding it breaks the
+  pure-logic-mod promise and cooks wrong. Mounted-followers never touches this
+  path (we detect via `get_rider`, never `GetMountInput`); it only surfaces more
+  because testing a mount mod means more mount/dismount cycles. (live-traced
+  2026-06-14)
 
 ## Followers
 
@@ -84,6 +103,67 @@ fully **reflected** to Python, which is how it was audited.
   undoes a *one-shot* movement freeze on a stowed/seated follower — see the cosmetic-rider
   recipe's freeze bullet. **Triggers in the cooked game, rarely in PIE** (PIE's small
   always-loaded world keeps followers close enough to never trip it).
+  - **Fighting catch-up per-tick JAMS the follower AI — stow and restore MUST be symmetric** (v43,
+    AstroCat 2026-06-15). The seated-follower freeze re-pins `MOVE_None` *every tick* to beat the
+    leash re-enable. That keeps the catch-up state machine perpetually mid-`wait_for_catch_up_time`:
+    it never registers a successful catch-up. If restore only re-enables movement/collision/anim and
+    **doesn't reset that AI state**, the follower comes off the saddle **inert — won't follow orders,
+    won't attack** (cooked/real-server only; the leash never trips in PIE so it passes every PIE test).
+    Fix = call the game's own catch-up exit on restore: **`try_resume_from_catch_up_time()`**
+    (counterpart to `wait_for_catch_up_time`) + **`cancel_any_forced_movement()`** (clears an in-flight
+    catch-up teleport). Both are `ConanCharacter` methods, BlueprintCallable, server-side, and are
+    safe no-ops when the follower isn't actually catching up (so call them on every restored follower,
+    one-shot per dismount). General rule: **anything you induce on a follower while seated must have a
+    matching undo on restore** — movement mode, collision, anim, *and* AI/catch-up state.
+  - **The AI jam has TWO halves; v43 reset only the first** (v44, AstroCat 2026-06-16). After v43,
+    explicit "attack my target" mostly worked but **autonomous "attack on sight" stayed dead and got
+    worse each mount/dismount cycle**. Cause: the leash leaves the follower's brain on its catch-up/
+    return **behavior subtree** instead of the default combat subtree, and movement-only resets don't
+    touch that. Conan AI uses **dynamic behavior subtrees** (`ConanAIController`: `set_behavior_subtree`
+    / `default_dynamic_behavior_trees` (Map[GameplayTag,BehaviorTree])). Reset them on restore with
+    **`ConanAIController.reset_all_behavior_subtrees_to_default()`** (`GetController` → cast
+    `ConanAIController` → call). Symptom map: *movement broken* → catch-up half (v43); *won't auto-engage
+    / degrades per cycle* → subtree half (v44).
+  - **Pure vs impure gotcha when reading follower AI state:** `is_ai_controller_leashing()` is **pure**
+    (safe to read as a data pin), but `have_valid_target()` is **impure** — wiring it as a pure data pin
+    gets the node **pruned at compile** ("Exec pin not connected … read as default"). Put impure queries
+    in the exec chain or don't use them as data.
+  - Heavier escalation if a follower still won't re-engage: re-issue the follow order on the dismount
+    edge via `ThrallSystemComponent.server_set_following(follower, true, feedback=False)` (`feedback=False`
+    = no command sound/spam). Edge-trigger it — it's NOT safe per-tick.
+
+### Manager tick performance — don't `GetAllActorsOfClass` every tick (v41, 2026-06-13)
+- **`GetAllActorsOfClass(ConanCharacter)` is O(every player + thrall + NPC)** and runs the whole
+  collection each call; doing it per tick (×3 iterations: cosmetic loop + player-find + global sweep),
+  on the server AND every client, **even when nobody is riding**, is a real server-FPS cost that scales
+  with total population, not riders (the AstroCat "still has FPS issues" report). It works (quoted
+  `ActorClass` default — see Packaging), it's just the wrong tool for a hot path.
+- **Enumerate players cheaply** via `GameState.PlayerArray` (`GetGameState` → `PlayerArray` VariableGet,
+  O(players)) → `PlayerState.GetPawn`. PlayerArray entries ARE players (no `IsPlayerControlled` filter
+  needed). The per-player passes already use each player's follower list (O(followers)), so once the
+  player-find is off `PlayerArray` the whole per-player pass is cheap and can run every tick (keep cap
+  init un-gated, or new un-mounted players never get the cap raised to claim horses → deadlock).
+- **Split the two all-actor consumers and gate each by ROLE, not by a replicated flag** (BP variable
+  replication is NOT exposable via `BlueprintEditorLibrary` — no setter — so there's no server→client
+  gate flag to lean on; and the mod never replicated custom state, it recomputes per-instance from
+  native attach/`get_rider` replication):
+  - **COSMETIC loop** (applies the seated single-node anim): runs on every RENDER-capable instance —
+    clients + listen host + SP — **ungated**, so each instance re-derives EVERY player's seated-follower
+    pose. Only a **dedicated server skips it** (`KismetSystemLibrary.IsDedicatedServer` — no render, the
+    anim is invisible there and doesn't replicate). It gets its OWN `GetAllActorsOfClass`, run only in
+    the not-dedicated branch.
+  - **GLOBAL restore sweep** (server-authoritative cleanup): gets its OWN `GetAllActorsOfClass`, gated on
+    `SweepRun = AnyMounted OR WasMounted` (a 1-tick trailing so a just-dismounted / orphaned seat is
+    still restored the tick after the last mount). `AnyMounted` is set in the server per-player
+    `GetRider` detect.
+  - Result: an **idle dedicated server does ZERO `GetAllActorsOfClass`** (cosmetic skipped, sweep gated
+    off) — the server-FPS win — while clients/listen-host keep full visuals with no trade-off.
+- **★ DON'T gate the CLIENT cosmetic on "is the local player mounted"** (the rejected v40 approach): the
+  cosmetic is exactly what draws OTHER players' seated followers on your screen, so gating it locally
+  means you only see others' followers while you're also riding — a visible MP glitch. Gate the client
+  cosmetic only by render-capability (`is_dedicated_server`), never by local mount state.
+  Verified in PIE: v41 manager spawns, idle → `AnyMounted`/`SweepRun` false (sweep skipped),
+  `is_dedicated_server`=false in PIE so the cosmetic runs.
 
 ## Mod-configurable values — console commands, SaveGame, ServerSettings (2026-06-13)
 

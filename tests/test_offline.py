@@ -5,16 +5,16 @@ python (it only needs the repo on sys.path, which it adds from __file__):
 
     & 'C:\\Program Files\\Epic Games\\CEUE5Devkit\\Engine\\Binaries\\ThirdParty\\Python3\\Win64\\python.exe' tests\\test_offline.py
 
-Covers parse/render/edit (ir), the authoring DSL (author), the compactor
-(compact), config sanity, and that the root `bp_*` shims ARE the canonical
-`bpkit.*` objects. The in-editor behaviour (paste/compile/run) is covered
-separately by tests/test_bp_authoring.py.
+Covers parse/render/edit + the authoring DSL (ir), the compactor (compact),
+config sanity, and that the root `bp_*` shims ARE the canonical `bpkit.*`
+objects. The in-editor behaviour (paste/compile/run) is covered separately by
+tests/test_bp_authoring.py.
 """
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root
-from bpkit import ir, author, compact, config
+from bpkit import ir, compact, config
 
 _results = []
 
@@ -25,7 +25,7 @@ def expect(name, ok, detail=""):
 
 # --- ir: parse <-> render round-trip --------------------------------------
 def test_ir_roundtrip():
-    g = author.Graph()
+    g = ir.Graph()
     ev = g.event("ReceiveBeginPlay")
     pr = g.call("PrintString", "/Script/Engine.KismetSystemLibrary", inputs={"InString": "hi"})
     g.wire(ev, "then", pr, "execute")
@@ -62,9 +62,9 @@ def test_ir_typed_pin():
     expect("typed pin renders its SubCategoryObject", "EAnimationMode" in n.render())
 
 
-# --- author DSL renders wired import text ----------------------------------
+# --- ir DSL renders wired import text --------------------------------------
 def test_author_render():
-    g = author.Graph()
+    g = ir.Graph()
     ev = g.event("ReceiveBeginPlay")
     pr = g.call("PrintString", "/Script/Engine.KismetSystemLibrary", inputs={"InString": "x"})
     g.wire(ev, "then", pr, "execute")
@@ -77,7 +77,7 @@ def test_author_render():
 
 # --- compact: dense navigable outline --------------------------------------
 def test_compact():
-    g = author.Graph()
+    g = ir.Graph()
     ev = g.event("ReceiveBeginPlay")
     pr = g.call("PrintString", "/Script/Engine.KismetSystemLibrary", inputs={"InString": "x"})
     g.wire(ev, "then", pr, "execute")

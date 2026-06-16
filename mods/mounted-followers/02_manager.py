@@ -1,6 +1,7 @@
 """C2 manager build (canonical). BP_MountedFollowerManager : ModController.
 ReceiveTick:
-  - non-gated cosmetic seat loop first (runs on EVERY instance: server + clients)
+  - cosmetic seat loop first, on every RENDER-capable instance (clients + listen
+    host + SP); a dedicated server skips it (no render). Ungated by mount state.
   - then server-only (HasAuthority), PER PLAYER (v34): for every player pawn --
     raise the follower group caps once; detect mount state (get_rider scan over
     that player's followers); mounted -> stow unseated humanoids onto spare
@@ -16,7 +17,7 @@ for _m in list(sys.modules):
 import unreal
 import os
 import re
-from bpkit import bridge as bp, ir, compact as bc, config as _cfg
+from bpkit import bridge as bp, ir, build, compact as bc, config as _cfg
 sys.path.insert(0, os.path.join(_cfg.REPO_ROOT, "mods", "mounted-followers"))
 sys.modules.pop("mf_config", None)
 import mf_config as MOD
@@ -31,6 +32,8 @@ KSL = "/Script/Engine.KismetSystemLibrary"
 KML = "/Script/Engine.KismetMathLibrary"
 KTL = "/Script/Engine.KismetTextLibrary"
 DTAB = "/Script/Engine.DataTable"
+GAMESTATE = "/Script/Engine.GameStateBase"   # has PlayerArray (cheap player enumeration; v40)
+PSTATE = "/Script/Engine.PlayerState"
 SG_CLS_PATH = "%s/%s.%s_C" % (PKG, MOD.SAVEGAME, MOD.SAVEGAME)   # BP_MF_SaveGame generated class
 MODCTRL = unreal.ModController.static_class().get_path_name()    # ModController (declares MergeDataTables)
 DT_CMD_OBJ = MOD.full(MOD.CMD_TABLE)                              # our 1-row command table (object path)
@@ -60,6 +63,18 @@ intt = unreal.BlueprintEditorLibrary.get_basic_type_by_name("int")
 # completion per element, like PlayerMount).
 for vn in ("MgrVersion", "HumanoidCounter", "MountLimit"):
     unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, vn, intt)  # no-ops if exists
+# v40 PERF GATE (revised -- no MP trade-off):
+#  - The COSMETIC loop runs on every RENDER-capable instance (clients + listen host + SP), ungated, so
+#    each client always re-derives EVERYONE's seated-follower pose (the mod never replicated custom
+#    state -- it recomputes per-instance from native attach/get_rider replication). Only a *dedicated*
+#    server (no render, anim invisible + non-replicated) skips it -> is_dedicated_server gate.
+#  - The server's expensive GLOBAL SWEEP (its own GetAllActorsOfClass) gates on SweepRun = AnyMounted
+#    OR WasMounted (1-tick trailing so a just-dismounted/orphaned seat is still restored the tick after
+#    the last mount). AnyMounted is set in the server per-player GetRider detect. WasMounted = last
+#    tick's AnyMounted. So an idle DEDICATED server does ZERO GetAllActorsOfClass.
+_boolt = unreal.BlueprintEditorLibrary.get_basic_type_by_name("bool")
+for vn in ("AnyMounted", "SweepRun", "WasMounted"):
+    unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, vn, _boolt)
 conan_ref = unreal.BlueprintEditorLibrary.get_object_reference_type(unreal.ConanCharacter.static_class())
 # PlayerMount: per-player-iteration SCRATCH -- the horse the CURRENT player is riding (found by
 # get_rider scan; null when on foot). Safe as a member var because the player ForEach body runs
@@ -88,158 +103,88 @@ ANIM = MOD.IDLE_ANIM
 
 g = ir.Graph("EventGraph")
 
-def cast_node(target, pos):
-    return g.node("K2Node_DynamicCast",
-                  ['TargetType="/Script/CoreUObject.Class\'%s\'"' % target], base="DynamicCast", pos=pos)
+# === bpkit library bindings ==================================================
+# Engine-generic node-builders (cast / get_all_actors / array_* / var_* / chain)
+# now live on ir.Graph; the Conan/gameplay-specific ones (comp_of / attach /
+# detach / HUD) live in mf_nodes. These thin adapters bind them to THIS module's
+# graph `g` and keep the historical local names, so the graph body below is
+# UNCHANGED (the gotcha-encoding bodies are gone -- they're in the library now).
+sys.modules.pop("mf_nodes", None)
+import mf_nodes as mf
+CHAR, SMC, SCENE, CMC, ACTOR, CAPSULE = mf.CHAR, mf.SMC, mf.SCENE, mf.CMC, mf.ACTOR, mf.CAPSULE
+CLS, STRUCTS, ENUM = mf.CLS, mf.STRUCTS, mf.ENUM
 
-# --- diagnostic node helpers (flags defined at the top; see README §Debugging) ---
-def dbg(msg, pos):
-    """PrintString beacon, auto-stamped with the build version; wire exec via execute/then.
-    Only call under DEBUG. PIE-only (PrintString is compiled out of Shipping)."""
-    p = g.call("PrintString", KSL, pos=pos)
-    g.typed_input(p, "InString", "MF v%d: %s" % (MOD.MGR_VERSION, msg), "string")
-    return p
-def txt_lit(s, pos):
-    c = g.call("Conv_StringToText", KTL, pos=pos)
-    g.typed_input(c, "InString", s, "string")
-    return c
-def fifo(txt_node, pos):
-    """SHIP-VISIBLE banner: ConanCharacter.HUDShowFIFO(FText) -> the local client's scrolling
-    event feed; survives Shipping. WorldContextObject is AUTO-MANAGED: the compiler binds it to
-    self (manual links to it are DROPPED on paste -- verified v26). Only call under HUD_DIAG."""
-    f = g.call("HUDShowFIFO", CONAN, pos=pos)
-    g.wire(txt_node, "ReturnValue", f, "Text", exec=False)
-    return f
-
-# --- C1 attach/restore node helpers (replicated; reuse the proven Stow/Restore pattern) ---
-CHAR = "/Script/Engine.Character"
-SMC = "/Script/Engine.SkeletalMeshComponent"
-SCENE = "/Script/Engine.SceneComponent"
-CMC = "/Script/Engine.CharacterMovementComponent"
-ACTOR = "/Script/Engine.Actor"
-CLS = {"Mesh": SMC, "CharacterMovement": CMC,
-       "CapsuleComponent": "/Script/Engine.CapsuleComponent",
-       "PlayerMount": CONAN, "MountIdleAnim": "/Script/Engine.AnimSequence"}
-STRUCTS = {}
-ENUM = {
-    "EAttachmentRule": "/Script/CoreUObject.Enum'/Script/Engine.EAttachmentRule'",
-    "EAnimationMode":  "/Script/CoreUObject.Enum'/Script/Engine.EAnimationMode'",
-    "EMovementMode":   "/Script/CoreUObject.Enum'/Script/Engine.EMovementMode'",
-    "EDetachmentRule": "/Script/CoreUObject.Enum'/Script/Engine.EDetachmentRule'",
-}
-def type_obj(pin, cls_path):
-    pin.set("PinType.PinCategory", '"object"')
-    pin.set("PinType.PinSubCategoryObject", "/Script/CoreUObject.Class'%s'" % cls_path)
-def type_struct(pin, struct_path):
-    pin.set("PinType.PinCategory", '"struct"')
-    pin.set("PinType.PinSubCategoryObject", "/Script/CoreUObject.ScriptStruct'%s'" % struct_path)
-def type_var_pin(pin, name):
-    type_struct(pin, STRUCTS[name]) if name in STRUCTS else type_obj(pin, CLS[name])
-def var_self(name, pos):
-    n = g.node("K2Node_VariableGet", ['VariableReference=(MemberName="%s",bSelfContext=True)' % name],
-               base="VariableGet", pos=pos)
-    p = n.pin(name); p.dir = "EGPD_Output"; type_var_pin(p, name); return n
-def var_set_m(name, pos):
-    n = g.node("K2Node_VariableSet", ['VariableReference=(MemberName="%s",bSelfContext=True)' % name],
-               base="VariableSet", pos=pos)
-    p = n.pin(name); p.dir = "EGPD_Input"; type_var_pin(p, name); return n
-def comp_of(target, target_pin, comp_var, pos, parent=CHAR):
-    """Read a component (Mesh/CharacterMovement/Capsule) off `target`'s output pin."""
-    n = g.node("K2Node_VariableGet",
-               ['VariableReference=(MemberName="%s",MemberParent="/Script/CoreUObject.Class\'%s\'",bSelfContext=False)'
-                % (comp_var, parent)], base="VariableGet", pos=pos)
-    sp = n.pin("self"); sp.dir = "EGPD_Input"; type_obj(sp, parent)
-    op = n.pin(comp_var); op.dir = "EGPD_Output"; type_obj(op, CLS[comp_var])
-    g.wire(target, target_pin, n, "self", exec=False); return n
-def set_default(node, pin, value, category, enum=None):
-    p = node.pin(pin); p.dir = "EGPD_Input"
-    p.set("PinType.PinCategory", '"%s"' % category)
-    if enum: p.set("PinType.PinSubCategoryObject", ENUM[enum])
-    p.set("DefaultValue", '"%s"' % value)
-def bare_call(member, parent, pos):
-    return g.call(member, parent, pos=pos)
-def attach_node(pos, socket, rules="SnapToTarget"):
-    n = bare_call("K2_AttachToComponent", SCENE, pos)
-    set_default(n, "SocketName", socket, "name")
-    for r in ("LocationRule", "RotationRule", "ScaleRule"):
-        set_default(n, r, rules, "byte", enum="EAttachmentRule")
-    set_default(n, "bWeldSimulatedBodies", "false", "bool")
-    return n
-def actor_attach(pos, socket, rules="SnapToTarget"):
-    """AActor::K2_AttachToComponent -- attaches the ACTOR (its root) to a parent component.
-    Actor attachment REPLICATES (unlike component/mesh attachment), so clients see the rider."""
-    n = bare_call("K2_AttachToComponent", ACTOR, pos)
-    set_default(n, "SocketName", socket, "name")
-    for r in ("LocationRule", "RotationRule", "ScaleRule"):
-        set_default(n, r, rules, "byte", enum="EAttachmentRule")
-    set_default(n, "bWeldSimulatedBodies", "false", "bool")
-    return n
-def actor_detach(pos, rules="KeepWorld"):
-    """AActor::K2_DetachFromActor -- the BP-callable detach (matches K2_AttachToComponent). Plain
-    'DetachFromActor' is the C++ name and silently does nothing here -- cost the dismount bug."""
-    n = bare_call("K2_DetachFromActor", ACTOR, pos)
-    for r in ("LocationRule", "RotationRule", "ScaleRule"):
-        set_default(n, r, rules, "byte", enum="EDetachmentRule")
-    return n
-class Chain(object):
-    def __init__(self, start_node, start_pin):
-        self.node, self.pin = start_node, start_pin
-    def then(self, call_node, in_pin="execute", out_pin="then"):
-        g.wire(self.node, self.pin, call_node, in_pin, exec=True)
-        self.node, self.pin = call_node, out_pin; return call_node
-
-# --- array-function helpers (validated by tests/test_array_nodes.py). Array funcs MUST be
-# K2Node_CallArrayFunction (NOT plain CallFunction) with a fully-typed TargetArray, else the
-# wildcard never resolves -> "Target Array is undetermined" compile fail. ---
-KARRC = "/Script/Engine.KismetArrayLibrary"
-def _stype(pin, cat, sub=None, container=None, ref=False, const=False):
-    pin.set("PinType.PinCategory", '"%s"' % cat)
-    if sub: pin.set("PinType.PinSubCategoryObject", sub)
-    if container: pin.set("PinType.ContainerType", container)
-    if ref: pin.set("PinType.bIsReference", "True")
-    if const: pin.set("PinType.bIsConst", "True")
-def arr_fn(member, elem_sub, pos):
-    n = g.node("K2Node_CallArrayFunction",
-        ['FunctionReference=(MemberParent="%s",MemberName="%s")' % (ir.obj_path(KARRC), member)],
-        base="ArrFn", pos=pos)
-    sp = n.pin("self"); sp.dir = "EGPD_Input"; _stype(sp, "object", ir.obj_path(KARRC))
-    sp.set("DefaultObject", "/Script/Engine.Default__KismetArrayLibrary"); sp.set("bHidden", "True")
-    tp = n.pin("TargetArray"); tp.dir = "EGPD_Input"
-    _stype(tp, "object", elem_sub, "Array", ref=True, const=True); tp.set("bDefaultValueIsIgnored", "True")
-    return n
-def arr_var(name, elem_sub, pos):
-    n = g.var_get(name, "object", elem_sub, pos=pos)
-    n.pin(name).set("PinType.ContainerType", "Array"); return n
+def cast_node(target, pos):         return g.cast(target, pos)
+def get_all_actors(cls_path, pos):  return g.get_all_actors(cls_path, pos)
+def bare_call(member, parent, pos): return g.call(member, parent, pos=pos)
+def Chain(node, pin):               return g.chain(node, pin)
+def arr_fn(member, elem_sub, pos):  return g.array_fn(member, pos, elem_sub=elem_sub)
+def arr_var(name, elem_sub, pos):   return g.array_var(name, pos, elem_sub=elem_sub)
 def arr_item_pin(node, pin_name, elem_sub):
-    """Type a CallArrayFunction's element pin (NewItem / ItemToFind) to match TargetArray."""
-    p = node.pin(pin_name); p.dir = "EGPD_Input"; _stype(p, "object", elem_sub)
-    return p
+    return g.array_item_pin(node, pin_name, elem_sub=elem_sub)
 def get_item(arr_node, arr_pin, idx_node, idx_pin, elem_sub, pos):
-    n = g.node("K2Node_GetArrayItem", ["bReturnByRefDesired=False"], base="GetItem", pos=pos)
-    ap = n.pin("Array"); ap.dir = "EGPD_Input"; _stype(ap, "object", elem_sub, "Array")
-    ip = n.pin("Dimension 1"); ip.dir = "EGPD_Input"; _stype(ip, "int")
-    op = n.pin("Output"); op.dir = "EGPD_Output"; _stype(op, "object", elem_sub)
-    g.wire(arr_node, arr_pin, n, "Array", exec=False)
-    g.wire(idx_node, idx_pin, n, "Dimension 1", exec=False)
-    return n
-def get_all_actors(cls_path, pos):
-    """GameplayStatics.GetAllActorsOfClass(cls_path) -> OutActors (object array). ActorClass is a
-    class-wrapper pin set via DefaultObject; OutActors typed to the class."""
-    n = g.call("GetAllActorsOfClass", GS, pos=pos)
-    ap = n.pin("ActorClass"); ap.dir = "EGPD_Input"
-    ap.set("PinType.PinCategory", '"class"')
-    ap.set("PinType.PinSubCategoryObject", "/Script/CoreUObject.Class'/Script/Engine.Actor'")
-    ap.set("PinType.bIsUObjectWrapper", "True"); ap.set("DefaultObject", '"%s"' % cls_path)  # MUST be quoted, else ActorClass=null -> 0 results
-    # OutActors is Actor-typed (the wildcard output won't take a narrower type on paste); the
-    # runtime ActorClass default still filters to cls_path, so contents are cls_path instances.
-    op = n.pin("OutActors"); op.dir = "EGPD_Output"
-    _stype(op, "object", "/Script/CoreUObject.Class'/Script/Engine.Actor'", "Array")
-    return n
+    return g.array_get(arr_node, arr_pin, (idx_node, idx_pin), pos, elem_sub=elem_sub)
 
-# === COSMETIC SEAT loop -- driven NON-GATED from ReceiveTick below, so it runs on EVERY instance
-# (server + all clients). Now that the manager is Always Relevant it actually exists + ticks on
-# clients, so this applies the seated single-node anim LOCALLY on each client. (v14 logic, which was
-# correct -- it just never ran on clients because the manager wasn't relevant.) ===
+def type_obj(pin, cls_path):        mf.type_obj(pin, cls_path)
+def type_struct(pin, struct_path):  mf.type_struct(pin, struct_path)
+def var_self(name, pos):            return mf.var_self(g, name, pos)
+def var_set_m(name, pos):           return mf.var_set_m(g, name, pos)
+def comp_of(target, target_pin, comp_var, pos, parent=CHAR):
+    return mf.comp_of(g, target, target_pin, comp_var, pos, parent)
+def set_default(node, pin, value, category, enum=None):
+    mf.set_default(node, pin, value, category, enum)
+def attach_node(pos, socket, rules="SnapToTarget"):  return mf.attach_component(g, pos, socket, rules)
+def actor_attach(pos, socket, rules="SnapToTarget"): return mf.attach_actor(g, pos, socket, rules)
+def actor_detach(pos, rules="KeepWorld"):            return mf.detach_actor(g, pos, rules)
+def dbg(msg, pos):                  return mf.dbg(g, msg, pos, MOD.MGR_VERSION)
+def txt_lit(s, pos):                return mf.txt_lit(g, s, pos)
+def fifo(txt_node, pos):            return mf.fifo(g, txt_node, pos)
+
+# === v44 helpers: AI-behavior reset + console state dump =====================
+# v43 fixed the MOVEMENT half of the stow/restore asymmetry (catch-up/leash). v44 adds the
+# BEHAVIOR half: each ride leaves the follower's brain on the leash's "catch-up/return" subtree
+# instead of its default combat subtree, so autonomous "attack on sight" never fires and it drifts
+# worse each mount/dismount (AstroCat 2026-06-16). ResetAllBehaviorSubtreesToDefault puts the brain
+# back on its default subtree. It lives on the ConanAIController, so: GetController -> cast -> call.
+PAWN = "/Script/Engine.Pawn"
+AICTRL = "/Script/ConanSandbox.ConanAIController"
+KSL_STR = "/Script/Engine.KismetStringLibrary"
+
+def reset_ai_subtrees(fol, fol_pin, pos):
+    """GetController -> cast ConanAIController -> ResetAllBehaviorSubtreesToDefault. Returns the
+    cast node (the exec ENTRY -- wire the running exec into its 'execute'). Terminal: a follower
+    whose controller isn't a ConanAIController fails the cast and is simply skipped."""
+    x, y = pos
+    getc = g.call("GetController", PAWN, pos=(x, y + 220))
+    g.wire(fol, fol_pin, getc, "self", exec=False)
+    cst = g.cast(AICTRL, pos=(x + 230, y))
+    g.wire(getc, "ReturnValue", cst, "Object", exec=False)
+    rst = g.call("ResetAllBehaviorSubtreesToDefault", AICTRL, pos=(x + 490, y))
+    g.wire(cst, "AsConan AIController", rst, "self", exec=False)   # cast success pin (verify on deploy)
+    g.wire(cst, "then", rst, "execute", exec=True)
+    return cst
+
+def dump_ai(fol, fol_pin, pos):
+    """DEBUG console line via PrintString (our dbg channel): 'MF vN dismount leash=<b>' -- the
+    follower's leash/catch-up state at dismount. Returns the PrintString exec node. (IsAIControllerLeashing
+    is pure -> safe as data; HaveValidTarget was dropped -- it's IMPURE and pruned when used as a pure pin.)"""
+    x, y = pos
+    lz = g.call("IsAIControllerLeashing", CONAN, pos=(x, y + 200))
+    g.wire(fol, fol_pin, lz, "self", exec=False)
+    bs1 = g.call("Conv_BoolToString", KSL_STR, pos=(x + 220, y + 200))
+    g.wire(lz, "ReturnValue", bs1, "InBool", exec=False)
+    c1 = g.call("Concat_StrStr", KSL_STR, pos=(x + 440, y + 120))
+    g.typed_input(c1, "A", "MF v%d dismount leash=" % MOD.MGR_VERSION, "string")
+    g.wire(bs1, "ReturnValue", c1, "B", exec=False)
+    p = g.call("PrintString", KSL, pos=(x + 660, y))
+    g.wire(c1, "ReturnValue", p, "InString", exec=False)
+    return p
+
+# === COSMETIC SEAT loop -- driven from ReceiveTick below on every RENDER-capable instance (clients +
+# listen host + SP); a dedicated server skips it (v41 IsDedicatedServer gate -- no render). Ungated by
+# mount state. Now that the manager is Always Relevant it actually exists + ticks on clients, so this
+# applies the seated single-node anim LOCALLY on each client. (v14 logic, which was correct -- it just
+# never ran on clients because the manager wasn't relevant.) ===
 gaC = get_all_actors(CONAN, (300, -1300))
 loopMC = g.foreach(ACTOR, pos=(550, -1300))
 g.wire(gaC, "OutActors", loopMC, "Array", exec=False)
@@ -316,13 +261,31 @@ g.wire(meshMC, "Mesh", amResetMC, "self", exec=False)
 g.wire(bAttMC, "else", amResetMC, "execute", exec=True)
 
 tick = g.event("ReceiveTick")
-# Manager is Always Relevant, so it exists + ticks on every client. The cosmetic seat loop above is
-# NON-gated (runs on every instance); the gameplay below is server-only (HasAuthority).
-haz = g.call("HasAuthority", ACTOR, pos=(-250, 0))
-bAuth = g.branch(pos=(-50, 0))
-g.wire(tick, "then", gaC, "execute", exec=True)            # NON-GATED cosmetic seat loop (every instance)
-g.wire(loopMC, "Completed", bAuth, "execute", exec=True)   # THEN the server-gated per-player pass
+# v41 PERF: the OLD tick blindly ran GetAllActorsOfClass(ConanCharacter) -- O(every player + thrall +
+# NPC on the server) -- every tick on every instance, even when nobody was riding. Now: reset the
+# AnyMounted gate, run the cheap PlayerArray-driven per-player pass (server) which sets AnyMounted, and
+# gate the two expensive GetAllActorsOfClass calls -- the cosmetic on IsDedicatedServer (render-capable
+# instances only), the global restore sweep on SweepRun (= AnyMounted OR WasMounted).
+resetAM = g.var_set("AnyMounted", "bool", pos=(-700, 0)); resetAM.pin("AnyMounted").literal("false")
+g.wire(tick, "then", resetAM, "execute", exec=True)
+haz = g.call("HasAuthority", ACTOR, pos=(-500, 0))
+bAuth = g.branch(pos=(-300, 0))
 g.wire(haz, "ReturnValue", bAuth, "Condition", exec=False)
+
+# v40 (revised -- no MP trade-off): the COSMETIC runs on every RENDER-capable instance (clients +
+# listen host + SP), ungated, so each re-derives EVERY seated follower's pose. Only a *dedicated*
+# server skips it (no render; the anim is invisible + non-replicated). Both paths then run the
+# server pass (bAuth). gaC -> loopMC is wired at the cosmetic-loop definition above.
+dds = g.call("IsDedicatedServer", KSL, pos=(-650, -250))   # KismetSystemLibrary, not GameplayStatics
+ddsBranch = g.branch(pos=(-450, -250))
+g.wire(dds, "ReturnValue", ddsBranch, "Condition", exec=False)
+g.wire(resetAM, "then", ddsBranch, "execute", exec=True)
+g.wire(ddsBranch, "else", gaC, "execute", exec=True)        # render -> cosmetic
+g.wire(loopMC, "Completed", bAuth, "execute", exec=True)    # cosmetic done -> server pass
+g.wire(ddsBranch, "then", bAuth, "execute", exec=True)      # dedicated -> skip cosmetic, server pass
+
+# (v40 revised: no client-side mount detect needed -- clients run the cosmetic ungated via the
+# is_dedicated_server branch above, so they always animate every player's seated followers.)
 
 # NOTE: `dc MFHorses N` registration (merging our command row into the game's
 # CustomConsoleCommandsDataTable) is NOT done here. MergeDataTables is BlueprintProtected and ONLY
@@ -330,34 +293,41 @@ g.wire(haz, "ReturnValue", bAuth, "Condition", exec=False)
 # drops. That override is built after this graph injects (see the override section near the bottom).
 
 # === v34 PER-PLAYER PASS (the host-only fix). GetPlayerCharacter(0) served exactly one player;
-# now EVERY player pawn gets the full treatment. Player pawns are found by re-walking the SAME
-# GetAllActorsOfClass result the cosmetic loop consumed: a player pawn is a ConanCharacter with
-# a valid PlayerState (the proven discriminator from the cosmetic loop -- no new node kinds).
+# now EVERY player pawn gets the full treatment. v41: player pawns are enumerated via
+# GameState.PlayerArray -> GetPawn -> cast to ConanCharacter (O(players)), NOT by re-walking the
+# cosmetic loop's GetAllActorsOfClass result -- so the old IsPlayerControlled/PlayerState filter is gone.
 # Stow/restore is LEVEL-TRIGGERED and idempotent instead of transition-edge-triggered: per tick,
 # per mounted player, every UNSEATED humanoid follower is stowed (one-shot by construction: the
 # seated-check gates it) and every SEATED one gets the v31/v32 leash maintain; per unmounted
 # player, every seated follower is restored (one-shot: after the restore it is no longer seated,
-# so the v28 every-tick-AnimBP-reinit catastrophe cannot recur). This retires WasMounted/the
-# transition machinery -- and a follower whistled mid-ride now saddles up too. ===
+# so the v28 every-tick-AnimBP-reinit catastrophe cannot recur). This retires the per-player
+# transition machinery -- and a follower whistled mid-ride now saddles up too. (Note: WasMounted is
+# reintroduced in v41 purely as the global sweep's 1-tick trailing gate -- see the sweep below.) ===
 clrActive = arr_fn("Array_Clear", ir.obj_path(CONAN), (50, 350))
 g.wire(arr_var("ActiveSeats", ir.obj_path(CONAN), (50, 550)), "ActiveSeats", clrActive, "TargetArray", exec=False)
 g.wire(bAuth, "then", clrActive, "execute", exec=True)   # per-tick: reset the legit-seat set
-loopPS = g.foreach(ACTOR, pos=(250, 200))
-g.wire(gaC, "OutActors", loopPS, "Array", exec=False)
+# v40 PERF: enumerate players via GameState.PlayerArray (O(players)) instead of walking the whole
+# GetAllActorsOfClass(ConanCharacter) result (O(every player+thrall+NPC)). The PlayerArray entries ARE
+# the players, so the old IsPlayerControlled filter is gone. The whole per-player pass (caps/detect/
+# stow/restore) now uses only follower lists -> cheap -> runs every tick (un-gated by mount state, so
+# new players still get their cap init). Only the cosmetic (gated on IsDedicatedServer) and the
+# global restore sweep (gated on SweepRun) are gated by anything.
+gsGet = g.call("GetGameState", GS, pos=(0, 200))
+paGet = g.node("K2Node_VariableGet",
+    ['VariableReference=(MemberName="PlayerArray",MemberParent="%s",bSelfContext=False)' % ir.obj_path(GAMESTATE)],
+    base="VariableGet", pos=(220, 380))
+_psp = paGet.pin("self"); _psp.dir = "EGPD_Input"; type_obj(_psp, GAMESTATE)
+_pap = paGet.pin("PlayerArray"); _pap.dir = "EGPD_Output"; type_obj(_pap, PSTATE)
+_pap.set("PinType.ContainerType", "Array")
+g.wire(gsGet, "ReturnValue", paGet, "self", exec=False)
+loopPS = g.foreach(PSTATE, pos=(250, 200))
+g.wire(paGet, "PlayerArray", loopPS, "Array", exec=False)
 g.wire(clrActive, "then", loopPS, "Exec", exec=True)
+psPawn = g.call("GetPawn", PSTATE, pos=(450, 400))
+g.wire(loopPS, "Array Element", psPawn, "self", exec=False)
 castP = cast_node(CONAN, (500, 200))
-g.wire(loopPS, "Array Element", castP, "Object", exec=False)
+g.wire(psPawn, "ReturnValue", castP, "Object", exec=False)
 g.wire(loopPS, "LoopBody", castP, "execute", exec=True)
-# PLAYER GATE: IsPlayerControlled -- server-accurate, and this pass is HasAuthority-gated.
-# Do NOT use GetPlayerState here: it is not a UFUNCTION in this Conan build, and the paste
-# SILENTLY DROPS unresolvable CallFunction nodes (no orphan, no compile error -- IsValid then
-# reads an unwired pin = null = false), which killed the whole per-player pass in v34/v35.
-# Caught 2026-06-10 via live PIE probe + the authored-vs-pasted count check at the bottom.
-isPl = g.call("IsPlayerControlled", "/Script/Engine.Pawn", pos=(600, 400))
-g.wire(castP, "AsConan Character", isPl, "self", exec=False)
-bIsPl = g.branch(pos=(750, 200))
-g.wire(castP, "then", bIsPl, "execute", exec=True)
-g.wire(isPl, "ReturnValue", bIsPl, "Condition", exec=False)
 P = (castP, "AsConan Character")   # this iteration's player ConanCharacter
 
 # this player's followers (pure calls -> data-only fan-out to every loop below re-evaluates
@@ -374,7 +344,7 @@ g.wire(arr_var("InitializedPlayers", ir.obj_path(CONAN), (950, -180)), "Initiali
 arr_item_pin(hasInit, "ItemToFind", ir.obj_path(CONAN))
 g.wire(P[0], P[1], hasInit, "ItemToFind", exec=False)
 bInitP = g.branch(pos=(1200, 200))
-g.wire(bIsPl, "then", bInitP, "execute", exec=True)
+g.wire(castP, "then", bInitP, "execute", exec=True)   # PlayerArray entries are already players
 g.wire(hasInit, "ReturnValue", bInitP, "Condition", exec=False)
 prev, prev_pin = bInitP, "else"   # not yet initialized -> SET this player's Mount cap
 # v39: MOUNT-ONLY + configurable. Read the limit N from the SaveGame slot (does-exist ? loaded :
@@ -460,9 +430,12 @@ g.wire(isMounted, "ReturnValue", bMountedP, "Condition", exec=False)
 # Pass O: collect horses ALREADY carrying a seated humanoid, so the spare pool can't
 # double-book a horse on later ticks (a stowed rider doesn't register as the horse's "rider",
 # so GetRider can't exclude these).
+# v40: this player is mounted -> raise the gate so the cosmetic + sweep run this tick.
+setAMtrue = g.var_set("AnyMounted", "bool", pos=(2500, 250)); setAMtrue.pin("AnyMounted").literal("true")
+g.wire(bMountedP, "then", setAMtrue, "execute", exec=True)
 clrOcc = arr_fn("Array_Clear", ir.obj_path(CONAN), (2550, 300))
 g.wire(arr_var("OccupiedHorses", ir.obj_path(CONAN), (2550, 520)), "OccupiedHorses", clrOcc, "TargetArray", exec=False)
-g.wire(bMountedP, "then", clrOcc, "execute", exec=True)
+g.wire(setAMtrue, "then", clrOcc, "execute", exec=True)
 loopO = g.foreach(CONAN, pos=(2800, 300))
 g.wire(getFolP, "ReturnValue", loopO, "Array", exec=False)
 g.wire(clrOcc, "then", loopO, "Exec", exec=True)
@@ -525,17 +498,15 @@ g.wire(arr_var("SpareHorses", ir.obj_path(CONAN), (4150, 1170)), "SpareHorses", 
 arr_item_pin(addSpare, "NewItem", ir.obj_path(CONAN))
 g.wire(loopA, "Array Element", addSpare, "NewItem", exec=False)
 g.wire(bOccA, "else", addSpare, "execute", exec=True)    # free horse -> spare pool
-# SPACING: stagger this horse's follow distance by its loop index (index*180) so the horses
-# trail in a line behind the player instead of all clustering on one follow point.
-idxMul = g.call("Multiply_IntInt", KML, pos=(4400, 1180))
-g.wire(loopA, "Array Index", idxMul, "A", exec=False)
-g.typed_input(idxMul, "B", "180", "int")
-idxF = g.call("Conv_IntToDouble", KML, pos=(4600, 1180))
-g.wire(idxMul, "ReturnValue", idxF, "InInt", exec=False)
-setDist = g.call("SetAdditionalFollowDistance", CONAN, pos=(4400, 950))
-g.wire(loopA, "Array Element", setDist, "self", exec=False)
-g.wire(idxF, "ReturnValue", setDist, "NewFollowDistance", exec=False)
-g.wire(addSpare, "then", setDist, "execute", exec=True)
+# v42: REMOVED the per-spare-horse follow-distance stagger (was SetAdditionalFollowDistance =
+# index*180 while mounted, reset to 0 when on foot -- see the unmounted pass below). It was
+# purely cosmetic spacing (fan the spare horses into a trailing line) but it CLOBBERED the
+# player's own follow-distance setting: AdditionalFollowDistance is exactly the knob the in-game
+# follow-distance control drives, and the unmounted reset forced it to 0 on every horse follower
+# every tick (10 Hz), so any distance the player picked snapped back to the base (~5m). Seated
+# followers are actor-attached to their horse, so dropping the stagger only means the spare horses
+# follow at the player's chosen distance instead of a mod-imposed line. addSpare's exec just ends
+# the loop-body chain (the foreach iterates internally).
 
 # Pass B: every humanoid follower. SEATED (attach parent is a mountable horse) -> the per-tick
 # MAINTAIN (the v31/v32 leash fix: Conan's follower catch-up AI re-enables a seated rider's
@@ -687,8 +658,9 @@ chain.then(setHC)
 if DEBUG:
     chain.then(dbg("stowed a rider onto a spare horse", (6250, 1850)))
 
-# NOT MOUNTED housekeeping pass over the followers. Horses: reset the staggered follow
-# distance (the stagger otherwise outlives the ride). Humanoids: STATUE RESCUE -- if a horse
+# NOT MOUNTED housekeeping pass over the followers. Horses: nothing (v42 removed the
+# follow-distance stagger reset -- it clobbered the player's own setting). Humanoids: STATUE
+# RESCUE -- if a horse
 # died mid-ride its rider auto-detached but kept our stow freeze (MOVE_None, no collision);
 # while the owner stayed mounted the stow pass re-seats it, but once the owner is on foot
 # nothing else would unfreeze it (the global sweep below only handles SEATED bodies). So an
@@ -711,12 +683,9 @@ g.wire(loopDist, "Array Element", mtblD0, "self", exec=False)
 bMtblD0 = g.branch(pos=(2800, 3050))
 g.wire(loopDist, "LoopBody", bMtblD0, "execute", exec=True)
 g.wire(mtblD0, "ReturnValue", bMtblD0, "Condition", exec=False)
-convD0 = g.call("Conv_IntToDouble", KML, pos=(3050, 3280))
-g.typed_input(convD0, "InInt", "0", "int")
-setDist0 = g.call("SetAdditionalFollowDistance", CONAN, pos=(3050, 3050))
-g.wire(loopDist, "Array Element", setDist0, "self", exec=False)
-g.wire(convD0, "ReturnValue", setDist0, "NewFollowDistance", exec=False)
-g.wire(bMtblD0, "then", setDist0, "execute", exec=True)
+# v42: the horse branch (bMtblD0 "then") used to reset SetAdditionalFollowDistance to 0 here --
+# removed (see Pass A). A horse follower now needs no unmounted housekeeping, so "then" dead-ends;
+# only the humanoid branch ("else") does work (the statue rescue below).
 # humanoid -> unattached AND frozen (MOVE_None)? -> give it movement + collision back
 getParD0 = g.call("GetAttachParentActor", ACTOR, pos=(3050, 3450))
 g.wire(loopDist, "Array Element", getParD0, "self", exec=False)
@@ -748,9 +717,22 @@ colD0 = bare_call("SetActorEnableCollision", ACTOR, (4050, 3050))
 set_default(colD0, "bNewActorEnableCollision", "true", "bool")
 g.wire(loopDist, "Array Element", colD0, "self", exec=False)
 g.wire(walkD0, "then", colD0, "execute", exec=True)
+# v43: same AI-state reset as the global sweep (see there) -- the orphan/statue-rescue path also
+# needs the follower un-jammed from catch-up, not just re-enabled movement + collision.
+resumeD0 = bare_call("TryResumeFromCatchUpTime", CONAN, (4300, 3050))
+g.wire(loopDist, "Array Element", resumeD0, "self", exec=False)
+g.wire(colD0, "then", resumeD0, "execute", exec=True)
+cancelD0 = bare_call("CancelAnyForcedMovement", CONAN, (4550, 3050))
+g.wire(loopDist, "Array Element", cancelD0, "self", exec=False)
+g.wire(resumeD0, "then", cancelD0, "execute", exec=True)
+rescTail = cancelD0
 if DEBUG:
-    dbgResc = dbg("statue rescue (unfroze a stranded rider)", (4300, 3050))
-    g.wire(colD0, "then", dbgResc, "execute", exec=True)
+    dbgResc = dbg("statue rescue (unfroze a stranded rider)", (4800, 3050))
+    g.wire(cancelD0, "then", dbgResc, "execute", exec=True)
+    rescTail = dbgResc
+# v44: same default-subtree reset as the sweep (see helper note) for the orphan/statue-rescue path.
+cstD = reset_ai_subtrees(loopDist, "Array Element", (5100, 3050))
+g.wire(rescTail, "then", cstD, "execute", exec=True)
 
 # === GLOBAL RESTORE SWEEP (after the player loop): any humanoid still seated on a horse NO
 # mounted player legitimized this tick (ActiveSeats) gets restored. ONE restore path covers
@@ -760,8 +742,25 @@ if DEBUG:
 # dismount). One-shot by construction: restored -> no longer seated, so the plain AnimBP-mode
 # call fires exactly once (no v28 every-tick-reinit recurrence). ===
 loopG = g.foreach(ACTOR, pos=(250, 3700))
-g.wire(gaC, "OutActors", loopG, "Array", exec=False)
-g.wire(loopPS, "Completed", loopG, "Exec", exec=True)
+# v40 (revised): the server's global restore sweep gets its OWN GetAllActorsOfClass, GATED on
+# SweepRun = AnyMounted OR WasMounted (1-tick trailing so a just-dismounted/orphaned seat is still
+# restored the tick after the last mount). So an idle dedicated server does ZERO GetAllActorsOfClass.
+orSweep = g.call("BooleanOR", KML, pos=(-150, 3450))
+g.wire(g.var_get("AnyMounted", "bool", pos=(-350, 3400)), "AnyMounted", orSweep, "A", exec=False)
+g.wire(g.var_get("WasMounted", "bool", pos=(-350, 3500)), "WasMounted", orSweep, "B", exec=False)
+setSweepRun = g.var_set("SweepRun", "bool", pos=(-150, 3550))
+g.wire(orSweep, "ReturnValue", setSweepRun, "SweepRun", exec=False)
+g.wire(loopPS, "Completed", setSweepRun, "execute", exec=True)   # server per-player pass done
+setWasG = g.var_set("WasMounted", "bool", pos=(40, 3550))
+g.wire(g.var_get("AnyMounted", "bool", pos=(-150, 3680)), "AnyMounted", setWasG, "WasMounted", exec=False)
+g.wire(setSweepRun, "then", setWasG, "execute", exec=True)
+sweepGate = g.branch(pos=(230, 3450))
+g.wire(g.var_get("SweepRun", "bool", pos=(40, 3380)), "SweepRun", sweepGate, "Condition", exec=False)
+g.wire(setWasG, "then", sweepGate, "execute", exec=True)
+gaC_s = get_all_actors(CONAN, (430, 3550))   # the sweep's own GAAC -- only runs when SweepRun
+g.wire(sweepGate, "then", gaC_s, "execute", exec=True)
+g.wire(gaC_s, "OutActors", loopG, "Array", exec=False)
+g.wire(gaC_s, "then", loopG, "Exec", exec=True)
 castG = cast_node(CONAN, (500, 3700))
 g.wire(loopG, "Array Element", castG, "Object", exec=False)
 g.wire(loopG, "LoopBody", castG, "execute", exec=True)
@@ -813,24 +812,32 @@ colG = bare_call("SetActorEnableCollision", ACTOR, (3000, 3700))
 set_default(colG, "bNewActorEnableCollision", "true", "bool")
 g.wire(castG, "AsConan Character", colG, "self", exec=False)
 chainG.then(colG)
+# v43: RESET THE FOLLOWER'S AI STATE -- the missing half of the stow/restore pairing. The per-tick
+# MOVE_None maintain re-pin (the v32 leash fix) fights Conan's catch-up/leash AI every tick while a
+# follower is seated, which leaves it jammed mid-catch-up; restoring movement/collision/anim does
+# NOT clear that. TryResumeFromCatchUpTime is the game's own exit from the catch-up state (the
+# counterpart to WaitForCatchUpTime, which we effectively trigger); CancelAnyForcedMovement clears
+# any in-flight catch-up teleport/forced-move. Without these the follower won't follow orders or
+# attack after dismount (AstroCat 2026-06-15; cooked/real-server only -- the leash never trips in PIE).
+resumeG = bare_call("TryResumeFromCatchUpTime", CONAN, (3250, 3550))
+g.wire(castG, "AsConan Character", resumeG, "self", exec=False)
+chainG.then(resumeG)
+cancelG = bare_call("CancelAnyForcedMovement", CONAN, (3500, 3550))
+g.wire(castG, "AsConan Character", cancelG, "self", exec=False)
+chainG.then(cancelG)
 if DEBUG:
-    chainG.then(dbg("sweep-restored a rider (dismount/orphan)", (3250, 3700)))
+    chainG.then(dump_ai(castG, "AsConan Character", (3700, 3450)))   # console: leash/target at dismount
+    chainG.then(dbg("sweep-restored a rider (dismount/orphan)", (4950, 3700)))
+# v44: reset the follower's BEHAVIOR SUBTREES to default -- the AI-behavior half of the fix (see the
+# helper note). Ungated; terminal (cast-fail = controller isn't a ConanAIController -> skip).
+chainG.then(reset_ai_subtrees(castG, "AsConan Character", (5200, 3700)))
 
-text = g.render()
-n_authored = text.count("Begin Object Class=")
-bp_ptr, graph_ptr = bp.find_graph(FULL, "EventGraph")
-print("cleared:", bp.clear_graph(bp_ptr, graph_ptr))
-res = bp.inject(FULL, text, graph_name="EventGraph")
-print("inject:", res)
-# PASTE-DROP GUARD: ImportNodesFromText SILENTLY DISCARDS nodes whose function ref doesn't
-# resolve on this build (no orphan, no compile error -- downstream pins just lose their links;
-# this is how GetPlayerState vanished in v34/v35 and killed the per-player pass). authored !=
-# pasted is the only tell.
-dropped = n_authored - (res.get("pasted") or 0)
-if dropped:
-    print("!! PASTE DROPPED %d NODE(S): authored %d, pasted %d -- a function ref didn't"
-          " resolve on this build. Diff the render against the readback to find it." %
-          (dropped, n_authored, res.get("pasted")))
+# Build the EventGraph through the harness: clear + inject (auto-relinks any wire the engine
+# drops on paste -- the GetArrayItem.Output class) + compile + save + full scan (dropped
+# nodes via count, dropped wires, orphans, wildcards, error nodes) + BUILD OK. The
+# ModDataTableOperations override + CDO stamping follow (separate graph / class defaults).
+build.build_graph(FULL, g)
+bp_ptr, graph_ptr = bp.find_graph(FULL, "EventGraph")   # ptrs for the override + CDO below
 
 # === REGISTER `dc MFHorses N`: merge our command row into the game's CustomConsoleCommandsDataTable.
 # MergeDataTables is BlueprintProtected -- it resolves ONLY inside the ModController
@@ -910,30 +917,5 @@ if gc:
         print("CDO MountIdleAnim set:", anim_obj.get_name())
     unreal.EditorAssetLibrary.save_asset(PATH)
     print("CDO MgrVersion=%d + always_relevant stamped" % MOD.MGR_VERSION)
-txt = bp.export_nodes(bp.graph_nodes(graph_ptr))
-import re
-orphans = re.findall(r'PinName="([^"]+)"[^)]*?bOrphanedPin=True', txt)
-print("ORPHANS:", len(orphans), orphans if orphans else "(clean)")
-
-# REAL compile verification -- do NOT trust inject's compiled flag (it means "compile
-# ran", not "no errors"). Scan the compiled graph per-node for unresolved wildcard pins
-# (e.g. an Array_Length whose type never got implied -> "Target Array is undetermined")
-# and for compiler-stamped error markers. The ForEach macro legitimately carries wildcard
-# pins (resolved via its ResolvedWildcardType header) so it's excluded.
-problems = []
-for blk in re.split(r'(?=Begin Object Class=)', txt):
-    if not blk.strip():
-        continue
-    name = (re.search(r'Name="([^"]+)"', blk) or [None, "?"])[1]
-    is_macro = "K2Node_MacroInstance" in blk  # ForEach etc.: wildcard is expected/resolved
-    for pin in re.findall(r'CustomProperties Pin \((.*)\)', blk):
-        pn = (re.search(r'PinName="([^"]+)"', pin) or [None, "?"])[1]
-        if 'PinCategory="wildcard"' in pin and not is_macro:
-            problems.append("WILDCARD unresolved: %s.%s" % (name, pn))
-    if "ErrorMsg=" in blk or 'bHasCompilerMessage=True' in blk:
-        problems.append("ERROR-MARKED node: %s" % name)
-print("COMPILE PROBLEMS:", len(problems))
-for p in problems:
-    print("  !!", p)
-print("BUILD OK" if not problems and not orphans and not dropped
-      else "BUILD HAS ISSUES -- DO NOT PLAY YET")
+# (EventGraph scan + BUILD OK verdict are handled by build.build_graph above; the override
+# graph has its own verify, and the CDO stamping printed its own confirmation.)

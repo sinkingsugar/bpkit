@@ -1,7 +1,7 @@
 """Metadata for the mounted-followers mod -- the single place that decides WHERE the
 mod's generated Blueprints are written and what they're called.
 
-The builders (00_recon / 01_recipe / 02_manager / 02a_manager_minimal) all read
+The builders (00_recon / 02_manager / 02a_manager_minimal) all read
 from here, so changing OUTPUT_PKG moves the whole mod in one edit.
 
 Imported by the builders via bpkit.config.REPO_ROOT (so it works no matter the cwd).
@@ -18,7 +18,6 @@ OUTPUT_PKG = "/Game/Mods/MountedFollowers"
 
 # Asset names within OUTPUT_PKG.
 MANAGER = "BP_MountedFollowerManager"   # the ModController manager (the mod itself)
-RECIPE = "BP_MF_Recipe"                 # the Stow/Restore cosmetic-mount recipe
 SAVEGAME = "BP_MF_SaveGame"             # USaveGame subclass holding the persisted Mount limit
 COMMAND = "BP_MF_HorsesCommand"         # UDataActorCommand subclass: the `dc MFHorses N` handler
 CMD_TABLE = "DT_MF_Commands"            # 1-row BlueprintCommandDataRow table merged into the game's
@@ -116,7 +115,51 @@ CUSTOM_CMD_TABLE = "/Game/Systems/Cheats/CustomConsoleCommandsDataTable"  # game
 #        a UDataActorCommand registered by merging DT_MF_Commands into the game's
 #        CustomConsoleCommandsDataTable at BeginPlay). The command applies to all players live
 #        (no restart) and persists N to a BP_MF_SaveGame slot, reloaded on each per-player init.
-MGR_VERSION = 39
+# 40 = PERF: stop the blind per-tick GetAllActorsOfClass(ConanCharacter) sweep (O(every player+thrall
+#      +NPC), ran on server AND every client even when nobody was riding -- a server-FPS cost separate
+#      from the v39 BT fix). Now: players are enumerated via GameState.PlayerArray (O(players)); the
+#      per-player pass (caps/detect/stow/restore) is cheap + runs every tick; the expensive
+#      GetAllActorsOfClass cosmetic + global sweep gate on RunCosmetic (=AnyMounted OR WasMounted, a
+#      1-tick trailing run so the cosmetic anim-reset still fires the tick after the last dismount).
+#      Server sets AnyMounted in the per-player detect; clients via a cheap local-player follower scan
+#      (no replication available). Idle ticks (nobody riding) now do ZERO GetAllActorsOfClass.
+#      Trade-off: a client only seat-animates OTHER players' followers while ITS local player is also
+#      riding. (NEVER SHIPPED -- that trade-off was rejected; see v41.)
+# 41 = v40 perf WITHOUT the MP trade-off. The COSMETIC loop runs on every RENDER instance (clients +
+#      listen host + SP), UNGATED -- so each re-derives EVERY player's seated-follower pose (the mod
+#      never replicated custom state; it recomputes per-instance from native attach/get_rider). Only a
+#      *dedicated* server skips the cosmetic (is_dedicated_server -- no render, anim invisible + non-
+#      replicated). The server's global restore sweep gets its OWN GetAllActorsOfClass, gated on
+#      SweepRun = AnyMounted OR WasMounted (1-tick trailing for dismount/orphan restore). Player-find
+#      via GameState.PlayerArray. Net: an idle DEDICATED server does ZERO GetAllActorsOfClass; clients
+#      keep animating everyone (no trade-off). Listen server fully correct (host = render + authority).
+# 42 = REMOVED follow-distance management entirely. The mod set SetAdditionalFollowDistance =
+#      index*180 on each spare horse while mounted (cosmetic: fan the posse into a trailing line)
+#      and reset it to 0 on every horse follower when on foot. But AdditionalFollowDistance is the
+#      same knob Conan's in-game follow-distance control drives, and the unmounted reset ran every
+#      tick (10 Hz) on the server -> any distance the player picked was clobbered back to the base
+#      (~5m) within a frame. It was a solution looking for a problem; seated followers are actor-
+#      attached to their horse so spacing them was the only effect. Dropped both spots -> spare
+#      horses now follow at the player's chosen distance; the player's follow-distance setting sticks.
+# 43 = FIX follower inactivity after dismount (AstroCat 2026-06-15). The stow/restore pair was
+#      ASYMMETRIC: stow + the per-tick MOVE_None maintain re-pin (v32 leash fix) provoke Conan's
+#      catch-up/leash AI every tick while a follower is seated, jamming it mid-catch-up; restore only
+#      un-did movement/collision/anim and never reset that AI state -- so after dismount the follower
+#      wouldn't follow orders or attack. Added the missing half to BOTH restore paths (global sweep +
+#      statue rescue): TryResumeFromCatchUpTime (the game's own catch-up exit, counterpart to
+#      WaitForCatchUpTime) + CancelAnyForcedMovement (clears an in-flight catch-up teleport). Server-
+#      side, one-shot per dismount. Cooked/real-server ONLY -- the leash never trips in PIE, so verify
+#      in a cook, not PIE.
+# 44 = FIX the BEHAVIOR half of the dismount bug (AstroCat 2026-06-16: v43 helped but still unstable --
+#      fine the first ride, degrades each subsequent mount/dismount; "attack on sight" dead, explicit
+#      "attack my target" only sometimes). v43 restored MOVEMENT (catch-up/leash) -> explicit move
+#      orders mostly work; but the follower's brain is left on the leash's catch-up/return behavior
+#      SUBTREE instead of its default combat subtree, so autonomous engagement never fires and it drifts
+#      worse each cycle. Added ConanAIController.ResetAllBehaviorSubtreesToDefault to BOTH restore paths
+#      (GetController -> cast ConanAIController -> reset), ungated, terminal. Plus a DEBUG-only console
+#      dump (leash/has-target state) at dismount via the existing PrintString/dbg channel. Cooked/real-
+#      server verification (PIE can't trip the leash).
+MGR_VERSION = 44
 
 # Seated idle pose played on a stowed rider (full object path).
 IDLE_ANIM = ("/Game/Characters/humans/animations/mounted/Horse/"

@@ -12,11 +12,7 @@ OUTPUT_PKG = _cfg.OUTPUT_PKG
 
 # Ordered build steps, run in the live editor with Play STOPPED. 00_recon.py is
 # read-only diagnostics, not a build step, so it's intentionally excluded. The
-# manager (02) IS the mod: it inlines its own stow/restore, so 01_recipe.py (the
-# C1 proof-of-concept that authored a standalone Stow/Restore recipe BP) is no
-# longer built or shipped -- it's kept as the teaching/reference example of
-# authoring custom events. (BP_MF_Recipe was dropped from the pak at v34; its
-# mesh-attach pattern is the superseded pre-MP approach anyway.)
+# manager (02) IS the mod -- it inlines its own stow/restore.
 # Order matters: 03 (SaveGame class) -> 04 (command BP, casts to the SaveGame class) ->
 # 05 (command DataTable, references the command BP class) -> 02 (manager, casts the SaveGame +
 # DefaultObject-refs the command table in its ModDataTableOperations override).

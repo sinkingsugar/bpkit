@@ -35,6 +35,8 @@ import uuid
 
 _BPG = "/Script/BlueprintGraph."
 _CLASS_OBJ = "/Script/CoreUObject.Class'%s'"
+_KARR = "/Script/Engine.KismetArrayLibrary"
+_GS = "/Script/Engine.GameplayStatics"
 
 
 def guid():
@@ -114,15 +116,24 @@ class Pin(object):
         return None
 
     # --- fluent typing (so defaults/wires merge instead of orphaning) ---------
-    def typed(self, category, sub_object=None, direction=None):
+    def typed(self, category, sub_object=None, direction=None,
+              container=None, ref=False, const=False):
         """Give this pin an explicit PinType. category: 'byte'/'name'/'bool'/
-        'object'/'struct'/... ; sub_object: an obj_path()/enum_path()/struct_path()
-        string for object/enum/struct pins. Returns self (chainable)."""
+        'object'/'struct'/'string'/... ; sub_object: an obj_path()/enum_path()/
+        struct_path() string for object/enum/struct pins; container: 'Array'/'Set'/
+        'Map'; ref/const for by-ref pins (e.g. a CallArrayFunction TargetArray).
+        Returns self (chainable)."""
         if direction:
             self.dir = direction
         self.set("PinType.PinCategory", '"%s"' % category)
         if sub_object:
             self.set("PinType.PinSubCategoryObject", sub_object)
+        if container:
+            self.set("PinType.ContainerType", container)
+        if ref:
+            self.set("PinType.bIsReference", "True")
+        if const:
+            self.set("PinType.bIsConst", "True")
         return self
 
     def literal(self, value):
@@ -214,6 +225,22 @@ class Node(object):
             out.append("   " + p.render())
         out.append("End Object")
         return "\n".join(out)
+
+
+# ----------------------------------------------------------------------------
+# Chain - fluent exec wiring
+# ----------------------------------------------------------------------------
+class Chain(object):
+    """Fluent exec-chaining over a graph: each .then() wires the running exec pin
+    into call_node.in_pin and advances to call_node.out_pin. Returns the wired node
+    (so you can branch off it). Build via g.chain(start_node, start_pin)."""
+    def __init__(self, graph, node, pin):
+        self.g, self.node, self.pin = graph, node, pin
+
+    def then(self, call_node, in_pin="execute", out_pin="then"):
+        self.g.wire(self.node, self.pin, call_node, in_pin, exec=True)
+        self.node, self.pin = call_node, out_pin
+        return call_node
 
 
 # ----------------------------------------------------------------------------
@@ -336,13 +363,101 @@ class Graph(object):
                                 else obj_path(parent), direction="EGPD_Input")
         return n
 
-    def var_set(self, name, category="object", sub=None, pos=(0, 0)):
-        """Typed self-context VariableSet. Value input pin is named `name`."""
-        n = self.node("K2Node_VariableSet",
-                      ['VariableReference=(MemberName="%s",bSelfContext=True)' % name],
-                      base="VariableSet", pos=pos)
+    def var_set(self, name, category="object", sub=None, pos=(0, 0), parent=None):
+        """Typed VariableSet. self-context if parent is None; else a CROSS-INSTANCE
+        set of `name` on a `parent` object (wire the target into the returned node's
+        'self' pin, typed to `parent`). Value input pin is named `name`."""
+        if parent is None:
+            hdr = ['VariableReference=(MemberName="%s",bSelfContext=True)' % name]
+        else:
+            pp = parent if parent.startswith("/Script/CoreUObject") else obj_path(parent)
+            hdr = ['VariableReference=(MemberName="%s",MemberParent="%s",bSelfContext=False)'
+                   % (name, pp)]
+        n = self.node("K2Node_VariableSet", hdr, base="VariableSet", pos=pos)
         n.pin(name).typed(category, sub, direction="EGPD_Input")
+        if parent is not None:
+            n.pin("self").typed("object", parent if parent.startswith("/Script/CoreUObject")
+                                else obj_path(parent), direction="EGPD_Input")
         return n
+
+    # -- composite node-builders (each encodes a hard-won gotcha in ONE place) --
+    def cast(self, target_path, pos=(0, 0)):
+        """K2Node_DynamicCast to target_path. Wire the source object into 'Object';
+        the success output pin is 'As <DisplayName>' (e.g. 'AsConan Character')."""
+        return self.node("K2Node_DynamicCast",
+                         ['TargetType="%s"' % (_CLASS_OBJ % target_path)],
+                         base="DynamicCast", pos=pos)
+
+    def get_all_actors(self, cls_path, pos=(0, 0)):
+        """GameplayStatics.GetAllActorsOfClass(cls_path) -> OutActors (Actor-typed
+        array). The ActorClass DefaultObject MUST be a QUOTED class path -- unquoted
+        -> ActorClass=null -> 0 results (silent empty loop). The OutActors wildcard
+        won't narrow past Actor on paste, but the runtime ActorClass still filters."""
+        n = self.call("GetAllActorsOfClass", _GS, pos=pos)
+        ap = n.pin("ActorClass"); ap.dir = "EGPD_Input"
+        ap.set("PinType.PinCategory", '"class"')
+        ap.set("PinType.PinSubCategoryObject", obj_path("/Script/Engine.Actor"))
+        ap.set("PinType.bIsUObjectWrapper", "True")
+        ap.set("DefaultObject", '"%s"' % cls_path)
+        op = n.pin("OutActors"); op.dir = "EGPD_Output"
+        op.typed("object", obj_path("/Script/Engine.Actor"), container="Array")
+        return n
+
+    def array_fn(self, member, pos=(0, 0), elem_cat="object", elem_sub=None):
+        """A K2Node_CallArrayFunction (Array_Add/Clear/Length/...). MUST be
+        CallArrayFunction (not plain CallFunction) with a fully-typed TargetArray,
+        or the wildcard never resolves -> 'Target Array is undetermined'. Element
+        type = (elem_cat, elem_sub), e.g. ('object', obj_path(cls)) or ('string', None)."""
+        n = self.node("K2Node_CallArrayFunction",
+            ['FunctionReference=(MemberParent="%s",MemberName="%s")' % (obj_path(_KARR), member)],
+            base="ArrFn", pos=pos)
+        sp = n.pin("self"); sp.dir = "EGPD_Input"
+        sp.typed("object", obj_path(_KARR))
+        sp.set("DefaultObject", "/Script/Engine.Default__KismetArrayLibrary")
+        sp.set("bHidden", "True")
+        tp = n.pin("TargetArray"); tp.dir = "EGPD_Input"
+        tp.typed(elem_cat, elem_sub, container="Array", ref=True, const=True)
+        tp.set("bDefaultValueIsIgnored", "True")
+        return n
+
+    def array_var(self, name, pos=(0, 0), elem_cat="object", elem_sub=None, parent=None):
+        """A typed VariableGet of an ARRAY member (self-context unless parent given)."""
+        n = self.var_get(name, elem_cat, elem_sub, parent=parent, pos=pos)
+        n.pin(name).set("PinType.ContainerType", "Array")
+        return n
+
+    def array_item_pin(self, node, pin_name, elem_cat="object", elem_sub=None):
+        """Type a CallArrayFunction element pin (NewItem/ItemToFind) to the element."""
+        p = node.pin(pin_name); p.dir = "EGPD_Input"
+        p.typed(elem_cat, elem_sub)
+        return p
+
+    def array_get(self, arr_node, arr_pin, idx, pos=(0, 0), elem_cat="object", elem_sub=None):
+        """K2Node_GetArrayItem: arr[idx]. idx is an int literal OR a (node, pin)
+        tuple to wire a computed index. Output pin is 'Output'. NOTE: that Output is
+        a wildcard that won't take a paste-link to a typed consumer -- inject()
+        auto-relinks dropped wires (bridge.missing_links / connect_pins)."""
+        n = self.node("K2Node_GetArrayItem", ["bReturnByRefDesired=False"], base="GetItem", pos=pos)
+        n.pin("Array").typed(elem_cat, elem_sub, direction="EGPD_Input", container="Array")
+        ip = n.pin("Dimension 1").typed("int", direction="EGPD_Input")
+        n.pin("Output").typed(elem_cat, elem_sub, direction="EGPD_Output")
+        self.wire(arr_node, arr_pin, n, "Array", exec=False)
+        if isinstance(idx, tuple):
+            self.wire(idx[0], idx[1], n, "Dimension 1", exec=False)
+        else:
+            ip.literal(int(idx))
+        return n
+
+    def array_len(self, arr_node, arr_pin, pos=(0, 0), elem_cat="object", elem_sub=None):
+        """Array_Length(arr) -> ReturnValue (int)."""
+        n = self.array_fn("Array_Length", pos=pos, elem_cat=elem_cat, elem_sub=elem_sub)
+        n.pin("ReturnValue").typed("int", direction="EGPD_Output")
+        self.wire(arr_node, arr_pin, n, "TargetArray", exec=False)
+        return n
+
+    def chain(self, node, pin="then"):
+        """Fluent exec-chaining: c = g.chain(start); c.then(a); c.then(b)."""
+        return Chain(self, node, pin)
 
     # -- wiring --
     def wire(self, src, src_pin, dst, dst_pin, exec=True):

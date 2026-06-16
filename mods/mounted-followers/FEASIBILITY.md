@@ -369,10 +369,13 @@ compiled Blueprint and live-verified (§10 / C1 done).** Remaining to make it a 
       Also: also bumped the **"Warrior"** group cap (humanoid thralls live there), not just "Mount".
 - [ ] **Follower spacing (C5 polish).** Mounted (and on-foot) followers cluster/bump — they home on
       one follow point. Conan HAS a formation system (`join_formation`/`set_formation_criteria_row`/
-      `is_in_formation`) + a simple knob `set_additional_follow_distance(N)`. Easy fix: stagger each
-      spare horse's additional follow distance by its index so they trail in a line. NB calling a
-      setter on the GetArrayItem horse hits the same self-pin-merge issue — pre-type the self pin or
-      set it on the stored array element. Also: strip the vN debug PrintStrings in final polish.
+      `is_in_formation`) + a simple knob `set_additional_follow_distance(N)`.
+      **TRIED & REVERTED (v42):** the index*stagger via `SetAdditionalFollowDistance` shipped through
+      v41, but `AdditionalFollowDistance` is the SAME property Conan's in-game follow-distance control
+      drives — the mod's per-tick (10 Hz) management clobbered the player's own setting back to the base
+      (~5m). Removed entirely. If spacing is ever revisited, use the FORMATION system (which doesn't
+      fight the follow-distance knob), not `set_additional_follow_distance`. Also: strip the vN debug
+      PrintStrings in final polish.
 - [ ] **Per-mount socket/pose tuning.** camel/rhino variants exist; pick the matching
       `A_human_mounted_idle_<MOUNT>` and verify each species' `attachrider` socket.
 - [ ] **Combat behavior.** On ATTACK/aggro: auto-dismount the follower to fight on foot
