@@ -82,6 +82,9 @@ Things that cost real time here:
   - `docs/CONAN-NOTES.md` — live-verified Conan facts: mount seating is player-gated, `get_mount` broken
     (use `get_rider`), follower group caps, the ModController hook, MP/replication rules, **packaging/
     shipping (the (Mod Asset) rule, pak inspection, Shipping-safe diagnostics)**.
+  - `docs/CONAN-AI.md` — reusable NPC/thrall AI reference: controller hierarchy, dynamic behaviour
+    subtrees (orders/leash/combat), engagement behaviour (PASSIVE/DEFENSIVE/AGGRESSIVE), and the
+    leashing push/pop (`SetShouldNotLeash` / `FinishLeashing` on `ConanAttackerAIController`).
   - `docs/JOURNEY.md` — provenance (how the bridge + mod were reverse-engineered).
   - `mods/mounted-followers/FEASIBILITY.md` — the mounted-followers design audit + roadmap.
 

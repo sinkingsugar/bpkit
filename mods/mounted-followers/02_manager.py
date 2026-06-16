@@ -140,28 +140,68 @@ def dbg(msg, pos):                  return mf.dbg(g, msg, pos, MOD.MGR_VERSION)
 def txt_lit(s, pos):                return mf.txt_lit(g, s, pos)
 def fifo(txt_node, pos):            return mf.fifo(g, txt_node, pos)
 
-# === v44 helpers: AI-behavior reset + console state dump =====================
-# v43 fixed the MOVEMENT half of the stow/restore asymmetry (catch-up/leash). v44 adds the
-# BEHAVIOR half: each ride leaves the follower's brain on the leash's "catch-up/return" subtree
-# instead of its default combat subtree, so autonomous "attack on sight" never fires and it drifts
-# worse each mount/dismount (AstroCat 2026-06-16). ResetAllBehaviorSubtreesToDefault puts the brain
-# back on its default subtree. It lives on the ConanAIController, so: GetController -> cast -> call.
+# === v45 helpers: leash push/pop (Conan's OWN primitives) + console state dump ===============
+# The follower-AI jam is LEASHING. While seated we re-pin MOVE_None every tick, which fights Conan's
+# catch-up/leash AI and JAMS it -- the follower comes off the saddle stuck on BT_Leashing (combat
+# suppressed, engagement overridden to PASSIVE/DEFENSIVE) and won't auto-engage until it re-aggros
+# (AstroCat 2026-06; cook-only -- the leash never trips in PIE). v43 (try_resume+cancel) and v44
+# (reset_all_subtrees) were piecemeal restore-side guesses. v45 uses Conan's OWN pair, found by
+# dumping BTTask_FinishLeashing + reflecting the ConanAttackerAIController surface (docs/CONAN-AI.md):
+#   STOW push   -> SetShouldNotLeash(true): the leash never trips while seated, so catch-up never
+#                  engages and there is nothing to jam (the per-tick MOVE_None re-pin is now belt).
+#   RESTORE pop -> SetShouldNotLeash(false) + FinishLeashing(): re-enable leashing and run the game's
+#                  own clean leash-exit -- exactly what Conan's BT_Leashing finish task calls.
+# Both live on ConanAttackerAIController (HumanAIController extends it): GetController -> cast -> call.
+# A follower whose controller isn't a ConanAttackerAIController fails the cast and is skipped (terminal).
 PAWN = "/Script/Engine.Pawn"
-AICTRL = "/Script/ConanSandbox.ConanAIController"
+ATKCTRL = "/Script/ConanSandbox.ConanAttackerAIController"
+ATKCAST = "AsConan Attacker AIController"   # DynamicCast success pin (verified in BTTask_FinishLeashing)
 KSL_STR = "/Script/Engine.KismetStringLibrary"
 
-def reset_ai_subtrees(fol, fol_pin, pos):
-    """GetController -> cast ConanAIController -> ResetAllBehaviorSubtreesToDefault. Returns the
-    cast node (the exec ENTRY -- wire the running exec into its 'execute'). Terminal: a follower
-    whose controller isn't a ConanAIController fails the cast and is simply skipped."""
+def bool_lit(val, pos):
+    """Revert-proof bool literal: MakeLiteralBool(unset)=false; Not_PreBool flips it to true. (A wired
+    pin can't silently revert to its autogen default the way a set pin-default can -- bp_ir bool gap.)"""
+    mk = g.call("MakeLiteralBool", KSL, pos=pos)
+    if not val:
+        return mk, "ReturnValue"
+    nt = g.call("Not_PreBool", KML, pos=(pos[0] + 190, pos[1]))
+    g.wire(mk, "ReturnValue", nt, "A", exec=False)
+    return nt, "ReturnValue"
+
+def _ctrl_cast(fol, fol_pin, pos):
+    """GetController (pure) -> cast ConanAttackerAIController. Returns the cast node (exec ENTRY --
+    wire the running exec into its 'execute'; cast-fail dead-ends -> the follower is skipped)."""
     x, y = pos
     getc = g.call("GetController", PAWN, pos=(x, y + 220))
     g.wire(fol, fol_pin, getc, "self", exec=False)
-    cst = g.cast(AICTRL, pos=(x + 230, y))
+    cst = g.cast(ATKCTRL, pos=(x + 230, y))
     g.wire(getc, "ReturnValue", cst, "Object", exec=False)
-    rst = g.call("ResetAllBehaviorSubtreesToDefault", AICTRL, pos=(x + 490, y))
-    g.wire(cst, "AsConan AIController", rst, "self", exec=False)   # cast success pin (verify on deploy)
-    g.wire(cst, "then", rst, "execute", exec=True)
+    return cst
+
+def no_leash_on(fol, fol_pin, pos):
+    """STOW push: SetShouldNotLeash(true) on the follower's controller. Returns the cast (exec entry)."""
+    x, y = pos
+    cst = _ctrl_cast(fol, fol_pin, pos)
+    noL = g.call("SetShouldNotLeash", ATKCTRL, pos=(x + 490, y))
+    tn, tp = bool_lit(True, (x + 300, y + 260))
+    g.wire(tn, tp, noL, "NewShouldNotLeash", exec=False)
+    g.wire(cst, ATKCAST, noL, "self", exec=False)
+    g.wire(cst, "then", noL, "execute", exec=True)
+    return cst
+
+def restore_leash(fol, fol_pin, pos):
+    """RESTORE pop: SetShouldNotLeash(false) + FinishLeashing() -- Conan's own clean leash-exit
+    (mirrors BTTask_FinishLeashing). Returns the cast (exec entry)."""
+    x, y = pos
+    cst = _ctrl_cast(fol, fol_pin, pos)
+    noL = g.call("SetShouldNotLeash", ATKCTRL, pos=(x + 490, y))
+    fn, fp = bool_lit(False, (x + 300, y + 260))
+    g.wire(fn, fp, noL, "NewShouldNotLeash", exec=False)
+    g.wire(cst, ATKCAST, noL, "self", exec=False)
+    g.wire(cst, "then", noL, "execute", exec=True)
+    fin = g.call("FinishLeashing", ATKCTRL, pos=(x + 760, y))
+    g.wire(cst, ATKCAST, fin, "self", exec=False)
+    g.wire(noL, "then", fin, "execute", exec=True)
     return cst
 
 def dump_ai(fol, fol_pin, pos):
@@ -589,6 +629,12 @@ rotpM = setRotM.pin("NewRelativeRotation"); rotpM.dir = "EGPD_Input"
 type_struct(rotpM, "/Script/CoreUObject.Rotator"); rotpM.set("DefaultValue", '"0.000000,90.000000,0.000000"')
 g.wire(loopB, "Array Element", setRotM, "self", exec=False)
 g.wire(setRelM, "then", setRotM, "execute", exec=True)
+# v45 PUSH: gate leashing OFF while seated, re-asserted every tick right alongside the MOVE_None
+# re-pin. With the leash gated, Conan's catch-up AI never engages on the horse-dragged seated
+# follower -> the state machine can't jam -> the follower comes off the saddle clean. (The MOVE_None
+# re-pin above is now belt-and-suspenders; SetShouldNotLeash is the actual root-cause cure.)
+cstLeashM = no_leash_on(loopB, "Array Element", (4600, 1500))
+g.wire(setRotM, "then", cstLeashM, "execute", exec=True)
 
 # STOW (unseated): claim SpareHorses[HumanoidCounter]; only if the counter is in range
 # ("not enough horses" leaves the extras walking, by design). GUARD is an int-range test --
@@ -717,22 +763,16 @@ colD0 = bare_call("SetActorEnableCollision", ACTOR, (4050, 3050))
 set_default(colD0, "bNewActorEnableCollision", "true", "bool")
 g.wire(loopDist, "Array Element", colD0, "self", exec=False)
 g.wire(walkD0, "then", colD0, "execute", exec=True)
-# v43: same AI-state reset as the global sweep (see there) -- the orphan/statue-rescue path also
-# needs the follower un-jammed from catch-up, not just re-enabled movement + collision.
-resumeD0 = bare_call("TryResumeFromCatchUpTime", CONAN, (4300, 3050))
-g.wire(loopDist, "Array Element", resumeD0, "self", exec=False)
-g.wire(colD0, "then", resumeD0, "execute", exec=True)
-cancelD0 = bare_call("CancelAnyForcedMovement", CONAN, (4550, 3050))
-g.wire(loopDist, "Array Element", cancelD0, "self", exec=False)
-g.wire(resumeD0, "then", cancelD0, "execute", exec=True)
-rescTail = cancelD0
+# v45: same leash pop as the global sweep -- the orphan/statue-rescue path also needs the follower's
+# leash re-enabled + cleanly exited, not just movement+collision back. SetShouldNotLeash(false) +
+# FinishLeashing() (replaces v43 try_resume/cancel + v44 reset_all_subtrees).
+rescTail, rescPin = colD0, "then"
 if DEBUG:
-    dbgResc = dbg("statue rescue (unfroze a stranded rider)", (4800, 3050))
-    g.wire(cancelD0, "then", dbgResc, "execute", exec=True)
-    rescTail = dbgResc
-# v44: same default-subtree reset as the sweep (see helper note) for the orphan/statue-rescue path.
-cstD = reset_ai_subtrees(loopDist, "Array Element", (5100, 3050))
-g.wire(rescTail, "then", cstD, "execute", exec=True)
+    dbgResc = dbg("statue rescue (unfroze a stranded rider)", (4300, 3050))
+    g.wire(colD0, "then", dbgResc, "execute", exec=True)
+    rescTail, rescPin = dbgResc, "then"
+cstD = restore_leash(loopDist, "Array Element", (4600, 3050))
+g.wire(rescTail, rescPin, cstD, "execute", exec=True)
 
 # === GLOBAL RESTORE SWEEP (after the player loop): any humanoid still seated on a horse NO
 # mounted player legitimized this tick (ActiveSeats) gets restored. ONE restore path covers
@@ -812,25 +852,17 @@ colG = bare_call("SetActorEnableCollision", ACTOR, (3000, 3700))
 set_default(colG, "bNewActorEnableCollision", "true", "bool")
 g.wire(castG, "AsConan Character", colG, "self", exec=False)
 chainG.then(colG)
-# v43: RESET THE FOLLOWER'S AI STATE -- the missing half of the stow/restore pairing. The per-tick
-# MOVE_None maintain re-pin (the v32 leash fix) fights Conan's catch-up/leash AI every tick while a
-# follower is seated, which leaves it jammed mid-catch-up; restoring movement/collision/anim does
-# NOT clear that. TryResumeFromCatchUpTime is the game's own exit from the catch-up state (the
-# counterpart to WaitForCatchUpTime, which we effectively trigger); CancelAnyForcedMovement clears
-# any in-flight catch-up teleport/forced-move. Without these the follower won't follow orders or
-# attack after dismount (AstroCat 2026-06-15; cooked/real-server only -- the leash never trips in PIE).
-resumeG = bare_call("TryResumeFromCatchUpTime", CONAN, (3250, 3550))
-g.wire(castG, "AsConan Character", resumeG, "self", exec=False)
-chainG.then(resumeG)
-cancelG = bare_call("CancelAnyForcedMovement", CONAN, (3500, 3550))
-g.wire(castG, "AsConan Character", cancelG, "self", exec=False)
-chainG.then(cancelG)
+# v45: POP THE LEASH -- the matched counterpart of the stow's SetShouldNotLeash(true) push. The seated
+# maintain pass disabled leashing while seated; here we re-enable it AND run Conan's own clean leash-exit
+# so the post-dismount leash behaves like a normal follower's (the catch-up machine is never left jammed).
+# SetShouldNotLeash(false) + FinishLeashing() is exactly what Conan's BT_Leashing finish task calls --
+# it clears the leash subtree + its engagement-behaviour override the way the game does (replaces v43's
+# TryResume/Cancel + v44's ResetAllBehaviorSubtreesToDefault). Cooked/real-server only -- no leash in PIE.
 if DEBUG:
-    chainG.then(dump_ai(castG, "AsConan Character", (3700, 3450)))   # console: leash/target at dismount
-    chainG.then(dbg("sweep-restored a rider (dismount/orphan)", (4950, 3700)))
-# v44: reset the follower's BEHAVIOR SUBTREES to default -- the AI-behavior half of the fix (see the
-# helper note). Ungated; terminal (cast-fail = controller isn't a ConanAIController -> skip).
-chainG.then(reset_ai_subtrees(castG, "AsConan Character", (5200, 3700)))
+    chainG.then(dump_ai(castG, "AsConan Character", (3300, 3450)))   # console: leash state at dismount
+    chainG.then(dbg("sweep-restored a rider (dismount/orphan)", (4550, 3700)))
+# ungated; terminal (cast-fail = controller isn't a ConanAttackerAIController -> skip).
+chainG.then(restore_leash(castG, "AsConan Character", (4900, 3700)))
 
 # Build the EventGraph through the harness: clear + inject (auto-relinks any wire the engine
 # drops on paste -- the GetArrayItem.Output class) + compile + save + full scan (dropped

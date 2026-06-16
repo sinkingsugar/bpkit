@@ -159,7 +159,23 @@ CUSTOM_CMD_TABLE = "/Game/Systems/Cheats/CustomConsoleCommandsDataTable"  # game
 #      (GetController -> cast ConanAIController -> reset), ungated, terminal. Plus a DEBUG-only console
 #      dump (leash/has-target state) at dismount via the existing PrintString/dbg channel. Cooked/real-
 #      server verification (PIE can't trip the leash).
-MGR_VERSION = 44
+# 45 = ROOT-CAUSE the dismount AI jam with Conan's OWN leash push/pop (replaces the v43+v44 restore-side
+#      guesses). Recon of the shipped NewAI blueprints (BTTask_FinishLeashing + the
+#      ConanAttackerAIController surface; see docs/CONAN-AI.md) found the real primitives:
+#      SetShouldNotLeash(bool) gates leashing, FinishLeashing() is the game's own clean leash-exit (the
+#      exact call the leash BT's finish task makes). The bug: while seated we re-pin MOVE_None every tick,
+#      which fights the catch-up AI and JAMS it -> the follower comes off the saddle stuck on BT_Leashing
+#      with its engagement behaviour overridden to PASSIVE/DEFENSIVE (= AstroCat: "stood passive, only
+#      fights when hit, then goes passive again, degrades each ride"; AIEngagementBehavior = PASSIVE/
+#      DEFENSIVE/AGGRESSIVE). Fix as a symmetric push/pop:
+#        STOW push (per-tick, in the seated maintain pass) -> SetShouldNotLeash(true): the leash never
+#          trips while seated, so catch-up never engages -> nothing to jam (MOVE_None re-pin is now belt).
+#        RESTORE pop (both restore paths) -> SetShouldNotLeash(false) + FinishLeashing(): re-enable
+#          leashing and run the game's own clean exit, so the post-dismount leash behaves normally again.
+#      All on ConanAttackerAIController (GetController -> cast -> call); cast-fail = skip. Dropped v43's
+#      TryResumeFromCatchUpTime/CancelAnyForcedMovement and v44's ResetAllBehaviorSubtreesToDefault
+#      (FinishLeashing supersedes them). Cooked/real-server verification (the leash never trips in PIE).
+MGR_VERSION = 45
 
 # Seated idle pose played on a stowed rider (full object path).
 IDLE_ANIM = ("/Game/Characters/humans/animations/mounted/Horse/"
