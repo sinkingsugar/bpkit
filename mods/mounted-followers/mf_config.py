@@ -150,7 +150,16 @@ CUSTOM_CMD_TABLE = "/Game/Systems/Cheats/CustomConsoleCommandsDataTable"  # game
 #      WaitForCatchUpTime) + CancelAnyForcedMovement (clears an in-flight catch-up teleport). Server-
 #      side, one-shot per dismount. Cooked/real-server ONLY -- the leash never trips in PIE, so verify
 #      in a cook, not PIE.
-MGR_VERSION = 43
+# 44 = FIX the BEHAVIOR half of the dismount bug (AstroCat 2026-06-16: v43 helped but still unstable --
+#      fine the first ride, degrades each subsequent mount/dismount; "attack on sight" dead, explicit
+#      "attack my target" only sometimes). v43 restored MOVEMENT (catch-up/leash) -> explicit move
+#      orders mostly work; but the follower's brain is left on the leash's catch-up/return behavior
+#      SUBTREE instead of its default combat subtree, so autonomous engagement never fires and it drifts
+#      worse each cycle. Added ConanAIController.ResetAllBehaviorSubtreesToDefault to BOTH restore paths
+#      (GetController -> cast ConanAIController -> reset), ungated, terminal. Plus a DEBUG-only console
+#      dump (leash/has-target state) at dismount via the existing PrintString/dbg channel. Cooked/real-
+#      server verification (PIE can't trip the leash).
+MGR_VERSION = 44
 
 # Seated idle pose played on a stowed rider (full object path).
 IDLE_ANIM = ("/Game/Characters/humans/animations/mounted/Horse/"

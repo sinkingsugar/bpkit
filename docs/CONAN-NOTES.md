@@ -115,6 +115,19 @@ fully **reflected** to Python, which is how it was audited.
     safe no-ops when the follower isn't actually catching up (so call them on every restored follower,
     one-shot per dismount). General rule: **anything you induce on a follower while seated must have a
     matching undo on restore** — movement mode, collision, anim, *and* AI/catch-up state.
+  - **The AI jam has TWO halves; v43 reset only the first** (v44, AstroCat 2026-06-16). After v43,
+    explicit "attack my target" mostly worked but **autonomous "attack on sight" stayed dead and got
+    worse each mount/dismount cycle**. Cause: the leash leaves the follower's brain on its catch-up/
+    return **behavior subtree** instead of the default combat subtree, and movement-only resets don't
+    touch that. Conan AI uses **dynamic behavior subtrees** (`ConanAIController`: `set_behavior_subtree`
+    / `default_dynamic_behavior_trees` (Map[GameplayTag,BehaviorTree])). Reset them on restore with
+    **`ConanAIController.reset_all_behavior_subtrees_to_default()`** (`GetController` → cast
+    `ConanAIController` → call). Symptom map: *movement broken* → catch-up half (v43); *won't auto-engage
+    / degrades per cycle* → subtree half (v44).
+  - **Pure vs impure gotcha when reading follower AI state:** `is_ai_controller_leashing()` is **pure**
+    (safe to read as a data pin), but `have_valid_target()` is **impure** — wiring it as a pure data pin
+    gets the node **pruned at compile** ("Exec pin not connected … read as default"). Put impure queries
+    in the exec chain or don't use them as data.
   - Heavier escalation if a follower still won't re-engage: re-issue the follow order on the dismount
     edge via `ThrallSystemComponent.server_set_following(follower, true, feedback=False)` (`feedback=False`
     = no command sound/spam). Edge-trigger it — it's NOT safe per-tick.

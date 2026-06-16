@@ -140,6 +140,46 @@ def dbg(msg, pos):                  return mf.dbg(g, msg, pos, MOD.MGR_VERSION)
 def txt_lit(s, pos):                return mf.txt_lit(g, s, pos)
 def fifo(txt_node, pos):            return mf.fifo(g, txt_node, pos)
 
+# === v44 helpers: AI-behavior reset + console state dump =====================
+# v43 fixed the MOVEMENT half of the stow/restore asymmetry (catch-up/leash). v44 adds the
+# BEHAVIOR half: each ride leaves the follower's brain on the leash's "catch-up/return" subtree
+# instead of its default combat subtree, so autonomous "attack on sight" never fires and it drifts
+# worse each mount/dismount (AstroCat 2026-06-16). ResetAllBehaviorSubtreesToDefault puts the brain
+# back on its default subtree. It lives on the ConanAIController, so: GetController -> cast -> call.
+PAWN = "/Script/Engine.Pawn"
+AICTRL = "/Script/ConanSandbox.ConanAIController"
+KSL_STR = "/Script/Engine.KismetStringLibrary"
+
+def reset_ai_subtrees(fol, fol_pin, pos):
+    """GetController -> cast ConanAIController -> ResetAllBehaviorSubtreesToDefault. Returns the
+    cast node (the exec ENTRY -- wire the running exec into its 'execute'). Terminal: a follower
+    whose controller isn't a ConanAIController fails the cast and is simply skipped."""
+    x, y = pos
+    getc = g.call("GetController", PAWN, pos=(x, y + 220))
+    g.wire(fol, fol_pin, getc, "self", exec=False)
+    cst = g.cast(AICTRL, pos=(x + 230, y))
+    g.wire(getc, "ReturnValue", cst, "Object", exec=False)
+    rst = g.call("ResetAllBehaviorSubtreesToDefault", AICTRL, pos=(x + 490, y))
+    g.wire(cst, "AsConan AIController", rst, "self", exec=False)   # cast success pin (verify on deploy)
+    g.wire(cst, "then", rst, "execute", exec=True)
+    return cst
+
+def dump_ai(fol, fol_pin, pos):
+    """DEBUG console line via PrintString (our dbg channel): 'MF vN dismount leash=<b>' -- the
+    follower's leash/catch-up state at dismount. Returns the PrintString exec node. (IsAIControllerLeashing
+    is pure -> safe as data; HaveValidTarget was dropped -- it's IMPURE and pruned when used as a pure pin.)"""
+    x, y = pos
+    lz = g.call("IsAIControllerLeashing", CONAN, pos=(x, y + 200))
+    g.wire(fol, fol_pin, lz, "self", exec=False)
+    bs1 = g.call("Conv_BoolToString", KSL_STR, pos=(x + 220, y + 200))
+    g.wire(lz, "ReturnValue", bs1, "InBool", exec=False)
+    c1 = g.call("Concat_StrStr", KSL_STR, pos=(x + 440, y + 120))
+    g.typed_input(c1, "A", "MF v%d dismount leash=" % MOD.MGR_VERSION, "string")
+    g.wire(bs1, "ReturnValue", c1, "B", exec=False)
+    p = g.call("PrintString", KSL, pos=(x + 660, y))
+    g.wire(c1, "ReturnValue", p, "InString", exec=False)
+    return p
+
 # === COSMETIC SEAT loop -- driven from ReceiveTick below on every RENDER-capable instance (clients +
 # listen host + SP); a dedicated server skips it (v41 IsDedicatedServer gate -- no render). Ungated by
 # mount state. Now that the manager is Always Relevant it actually exists + ticks on clients, so this
@@ -685,9 +725,14 @@ g.wire(colD0, "then", resumeD0, "execute", exec=True)
 cancelD0 = bare_call("CancelAnyForcedMovement", CONAN, (4550, 3050))
 g.wire(loopDist, "Array Element", cancelD0, "self", exec=False)
 g.wire(resumeD0, "then", cancelD0, "execute", exec=True)
+rescTail = cancelD0
 if DEBUG:
     dbgResc = dbg("statue rescue (unfroze a stranded rider)", (4800, 3050))
     g.wire(cancelD0, "then", dbgResc, "execute", exec=True)
+    rescTail = dbgResc
+# v44: same default-subtree reset as the sweep (see helper note) for the orphan/statue-rescue path.
+cstD = reset_ai_subtrees(loopDist, "Array Element", (5100, 3050))
+g.wire(rescTail, "then", cstD, "execute", exec=True)
 
 # === GLOBAL RESTORE SWEEP (after the player loop): any humanoid still seated on a horse NO
 # mounted player legitimized this tick (ActiveSeats) gets restored. ONE restore path covers
@@ -781,7 +826,11 @@ cancelG = bare_call("CancelAnyForcedMovement", CONAN, (3500, 3550))
 g.wire(castG, "AsConan Character", cancelG, "self", exec=False)
 chainG.then(cancelG)
 if DEBUG:
-    chainG.then(dbg("sweep-restored a rider (dismount/orphan)", (3750, 3700)))
+    chainG.then(dump_ai(castG, "AsConan Character", (3700, 3450)))   # console: leash/target at dismount
+    chainG.then(dbg("sweep-restored a rider (dismount/orphan)", (4950, 3700)))
+# v44: reset the follower's BEHAVIOR SUBTREES to default -- the AI-behavior half of the fix (see the
+# helper note). Ungated; terminal (cast-fail = controller isn't a ConanAIController -> skip).
+chainG.then(reset_ai_subtrees(castG, "AsConan Character", (5200, 3700)))
 
 # Build the EventGraph through the harness: clear + inject (auto-relinks any wire the engine
 # drops on paste -- the GetArrayItem.Output class) + compile + save + full scan (dropped
