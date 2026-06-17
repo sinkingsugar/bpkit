@@ -388,6 +388,27 @@ class Graph(object):
                          ['TargetType="%s"' % (_CLASS_OBJ % target_path)],
                          base="DynamicCast", pos=pos)
 
+    def create_widget(self, widget_class_path, pos=(0, 0)):
+        """K2Node_CreateWidget (the BP 'Create Widget' node) -- instantiate a UMG widget
+        at runtime. `widget_class_path` is the WBP's GENERATED class ('/Game/.../W_X.W_X_C').
+        Pins: 'execute'/'then' (exec), 'Class' (default = the widget class), 'OwningPlayer'
+        (wire a PlayerController), 'ReturnValue' (the new widget). Call `.add_to_viewport` on
+        the result to show it. NOTE: WidgetBlueprintLibrary.Create is NOT paste-resolvable
+        (drops silently) -- this specialized node is the only authorable runtime create+init.
+        Format verified against the shipped Conan BaseHUD/FunCombat_PlayerController (2026-06-17)."""
+        n = self.node("/Script/UMGEditor.K2Node_CreateWidget", [], base="CreateWidget", pos=pos)
+        n.pin("execute").typed("exec", direction="EGPD_Input")
+        n.pin("then").typed("exec", direction="EGPD_Output")
+        cls = n.pin("Class").typed("class", obj_path("/Script/UMG.UserWidget"), direction="EGPD_Input")
+        cls.set("DefaultObject", '"%s"' % widget_class_path)
+        rv = n.pin("ReturnValue").typed("object", direction="EGPD_Output")
+        # the node reconstructs ReturnValue from Class on paste; type it to the gen-class to match
+        rv.set("PinType.PinSubCategoryObject",
+               "/Script/UMG.WidgetBlueprintGeneratedClass'%s'" % widget_class_path)
+        n.pin("OwningPlayer").typed("object", obj_path("/Script/Engine.PlayerController"),
+                                    direction="EGPD_Input")
+        return n
+
     def get_all_actors(self, cls_path, pos=(0, 0)):
         """GameplayStatics.GetAllActorsOfClass(cls_path) -> OutActors (Actor-typed
         array). The ActorClass DefaultObject MUST be a QUOTED class path -- unquoted

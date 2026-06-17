@@ -380,9 +380,15 @@ but does **not** set `WidgetTree.RootWidget` (the designer's `PasteWidgets` does
 separately) — author-from-scratch needs a `RootWidget` write. Live-verified: round-tripped a
 CanvasPanel+TextBlock from one WBP into a fresh blank WBP (0→2 widgets, intact hierarchy).
 
-Showing a widget at runtime is a *separate, graph-side* problem: `WidgetBlueprintLibrary.Create`
-is not paste-resolvable (drops), so the create+show path needs the specialized
-`K2Node_CreateWidget` node.
+Showing a widget at runtime is a *separate, graph-side* problem, also solved: `WidgetBlueprintLibrary.Create`
+is **not** paste-resolvable (it drops silently), so use **`ir.Graph.create_widget(wbp_class_path)`** — it
+authors the specialized **`K2Node_CreateWidget`** node (pins `execute`/`then`/`Class`/`OwningPlayer`/
+`ReturnValue`; format verified against the shipped `BaseHUD`/`FunCombat_PlayerController`). Wire a
+PlayerController into `OwningPlayer`, then `AddToViewport` the `ReturnValue` (give it a high `ZOrder` to
+sit above the game HUD). Two gotchas when feeding it: `UserWidget.GetWidgetFromName`'s `Name` is a
+`const FName&` → it must be **wired** (`MakeLiteralName`), a literal default is rejected; and a cast to
+`TextBlock` exposes its success pin as **`AsText`** (UMG's display name for `UTextBlock` is "Text").
+Live-verified end-to-end: a bpkit-authored overlay rendering on screen in PIE (2026-06-17).
 
 See [CONAN-NOTES.md](CONAN-NOTES.md) for the engine/game-specific node patterns
 discovered while building the mounted-followers mod, and [JOURNEY.md](JOURNEY.md)
