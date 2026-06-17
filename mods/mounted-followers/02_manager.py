@@ -375,8 +375,8 @@ if OVERLAY:
     # OverlayText accumulator. Built in BP nodes so it survives Shipping (no PrintString/GetAll). ---
     clrTxt = g.var_set("OverlayText", "string", pos=(1120, -1100))
     clrTxt.pin("OverlayText").literal(
-        "MF v%d humanoids | e=eng(0P 1D 2A) l=leash m=move(0froze 1walk 3nav) s=seated a=attacking c=combatRange"
-        % MOD.MGR_VERSION)
+        "MFv%d  eng:0=passive 1=def 2=aggr  move:0=FROZEN 1=walk 2=nav 3=fall  "
+        "tgt=hasTarget fol=following cd=canAttack(cooldownDone)" % MOD.MGR_VERSION)
     g.wire(castTB, "then", clrTxt, "execute", exec=True)
     getPawn = g.call("K2_GetPawn", "/Script/Engine.Controller", pos=(620, -1280))   # pure
     g.wire(gpc, "ReturnValue", getPawn, "self", exec=False)
@@ -420,12 +420,20 @@ if OVERLAY:
     g.wire(getParOv, "ReturnValue", seatV, "Object", exec=False)
     seats = g.call("Conv_BoolToString", KSL_STR, pos=(1780, -1540))
     g.wire(seatV, "ReturnValue", seats, "InBool", exec=False)
+    # FILTER to humanoids: horses also cast to ConanAttackerAIController (CreatureAIController extends it),
+    # so the cast doesn't exclude them -- IsMountable does (true=horse). Skip mountables; only humanoid
+    # followers (the ones with the dismount-AI bug) reach the cast + append.
+    mtblOv = g.call("IsMountable", CONAN, pos=(1100, -1380))
+    g.wire(loopO, "Array Element", mtblOv, "self", exec=False)
+    bMtblOv = g.branch(pos=(1300, -1100))
+    g.wire(loopO, "LoopBody", bMtblOv, "execute", exec=True)
+    g.wire(mtblOv, "ReturnValue", bMtblOv, "Condition", exec=False)
     # controller (humanoid only): GetController -> cast -> is_attacking / is_in_combat_range
     getCtrlOv = g.call("GetController", PAWN, pos=(1340, -1380))
     g.wire(loopO, "Array Element", getCtrlOv, "self", exec=False)
     castCtrlOv = g.cast(ATKCTRL, pos=(1580, -1160))
     g.wire(getCtrlOv, "ReturnValue", castCtrlOv, "Object", exec=False)
-    g.wire(loopO, "LoopBody", castCtrlOv, "execute", exec=True)   # gate: humanoid passes; horse CastFails -> skip
+    g.wire(bMtblOv, "else", castCtrlOv, "execute", exec=True)   # not mountable = humanoid -> proceed (horse skipped)
     atk = g.call("IsAttacking", ATKCTRL, pos=(1340, -1280))
     g.wire(castCtrlOv, ATKCAST, atk, "self", exec=False)
     atks = g.call("Conv_BoolToString", KSL_STR, pos=(1560, -1280))
@@ -434,25 +442,49 @@ if OVERLAY:
     g.wire(castCtrlOv, ATKCAST, cmb, "self", exec=False)
     cmbs = g.call("Conv_BoolToString", KSL_STR, pos=(1560, -1180))
     g.wire(cmb, "ReturnValue", cmbs, "InBool", exec=False)
-    # line = " [e<eng> l<lsh> m<mv> s<seat> a<atk> c<cmb>]" (alternating literal/value concats)
-    k1 = g.call("Concat_StrStr", KSL_STR, pos=(2000, -1700)); g.typed_input(k1, "A", " [e", "string"); g.wire(ebs, "ReturnValue", k1, "B", exec=False)
-    k2 = g.call("Concat_StrStr", KSL_STR, pos=(2180, -1700)); g.wire(k1, "ReturnValue", k2, "A", exec=False); g.typed_input(k2, "B", " l", "string")
+    # fol = is_following (PURE -- safe as data); cd = is_attack_cooldown_done (IMPURE -> wired into the
+    # exec chain below alongside have_valid_target, else it prunes). Both off the cast controller.
+    folc = g.call("IsFollowing", ATKCTRL, pos=(1780, -1280))
+    g.wire(castCtrlOv, ATKCAST, folc, "self", exec=False)
+    fols = g.call("Conv_BoolToString", KSL_STR, pos=(1980, -1280))
+    g.wire(folc, "ReturnValue", fols, "InBool", exec=False)
+    cdc = g.call("IsAttackCooldownDone", ATKCTRL, pos=(1780, -1180))
+    g.wire(castCtrlOv, ATKCAST, cdc, "self", exec=False)
+    cds = g.call("Conv_BoolToString", KSL_STR, pos=(1980, -1180))
+    g.wire(cdc, "ReturnValue", cds, "InBool", exec=False)
+    # have_valid_target is IMPURE -> call it IN the exec chain (between the cast and the append), not as a
+    # pure data pin (which prunes it -- the v44 lesson). Its bool result feeds the line. This is the field
+    # the "HUD shows nothing weird while it keeps getting hit" symptom points at: does the AI see a target?
+    hvt = g.call("HaveValidTarget", CONAN, pos=(1340, -1080))
+    g.wire(loopO, "Array Element", hvt, "self", exec=False)
+    hvts = g.call("Conv_BoolToString", KSL_STR, pos=(1560, -1080))
+    g.wire(hvt, "ReturnValue", hvts, "InBool", exec=False)
+    # line = "  | eng=<e> leash=<l> move=<m> seat=<s> atk=<a> combat=<c> tgt=<t>" (alternating lit/value concats)
+    k1 = g.call("Concat_StrStr", KSL_STR, pos=(2000, -1700)); g.typed_input(k1, "A", "  | eng=", "string"); g.wire(ebs, "ReturnValue", k1, "B", exec=False)
+    k2 = g.call("Concat_StrStr", KSL_STR, pos=(2180, -1700)); g.wire(k1, "ReturnValue", k2, "A", exec=False); g.typed_input(k2, "B", " leash=", "string")
     k3 = g.call("Concat_StrStr", KSL_STR, pos=(2360, -1700)); g.wire(k2, "ReturnValue", k3, "A", exec=False); g.wire(lzs, "ReturnValue", k3, "B", exec=False)
-    k4 = g.call("Concat_StrStr", KSL_STR, pos=(2540, -1700)); g.wire(k3, "ReturnValue", k4, "A", exec=False); g.typed_input(k4, "B", " m", "string")
+    k4 = g.call("Concat_StrStr", KSL_STR, pos=(2540, -1700)); g.wire(k3, "ReturnValue", k4, "A", exec=False); g.typed_input(k4, "B", " move=", "string")
     k5 = g.call("Concat_StrStr", KSL_STR, pos=(2720, -1700)); g.wire(k4, "ReturnValue", k5, "A", exec=False); g.wire(mvs, "ReturnValue", k5, "B", exec=False)
-    k6 = g.call("Concat_StrStr", KSL_STR, pos=(2900, -1700)); g.wire(k5, "ReturnValue", k6, "A", exec=False); g.typed_input(k6, "B", " s", "string")
+    k6 = g.call("Concat_StrStr", KSL_STR, pos=(2900, -1700)); g.wire(k5, "ReturnValue", k6, "A", exec=False); g.typed_input(k6, "B", " seat=", "string")
     k7 = g.call("Concat_StrStr", KSL_STR, pos=(3080, -1700)); g.wire(k6, "ReturnValue", k7, "A", exec=False); g.wire(seats, "ReturnValue", k7, "B", exec=False)
-    k8 = g.call("Concat_StrStr", KSL_STR, pos=(3260, -1700)); g.wire(k7, "ReturnValue", k8, "A", exec=False); g.typed_input(k8, "B", " a", "string")
+    k8 = g.call("Concat_StrStr", KSL_STR, pos=(3260, -1700)); g.wire(k7, "ReturnValue", k8, "A", exec=False); g.typed_input(k8, "B", " atk=", "string")
     k9 = g.call("Concat_StrStr", KSL_STR, pos=(3440, -1700)); g.wire(k8, "ReturnValue", k9, "A", exec=False); g.wire(atks, "ReturnValue", k9, "B", exec=False)
-    k10 = g.call("Concat_StrStr", KSL_STR, pos=(3620, -1700)); g.wire(k9, "ReturnValue", k10, "A", exec=False); g.typed_input(k10, "B", " c", "string")
+    k10 = g.call("Concat_StrStr", KSL_STR, pos=(3620, -1700)); g.wire(k9, "ReturnValue", k10, "A", exec=False); g.typed_input(k10, "B", " combat=", "string")
     k11 = g.call("Concat_StrStr", KSL_STR, pos=(3800, -1700)); g.wire(k10, "ReturnValue", k11, "A", exec=False); g.wire(cmbs, "ReturnValue", k11, "B", exec=False)
-    k12 = g.call("Concat_StrStr", KSL_STR, pos=(3980, -1700)); g.wire(k11, "ReturnValue", k12, "A", exec=False); g.typed_input(k12, "B", "]", "string")
+    k12 = g.call("Concat_StrStr", KSL_STR, pos=(3980, -1700)); g.wire(k11, "ReturnValue", k12, "A", exec=False); g.typed_input(k12, "B", " tgt=", "string")
+    k13 = g.call("Concat_StrStr", KSL_STR, pos=(4160, -1700)); g.wire(k12, "ReturnValue", k13, "A", exec=False); g.wire(hvts, "ReturnValue", k13, "B", exec=False)
+    k14 = g.call("Concat_StrStr", KSL_STR, pos=(4340, -1700)); g.wire(k13, "ReturnValue", k14, "A", exec=False); g.typed_input(k14, "B", " fol=", "string")
+    k15 = g.call("Concat_StrStr", KSL_STR, pos=(4520, -1700)); g.wire(k14, "ReturnValue", k15, "A", exec=False); g.wire(fols, "ReturnValue", k15, "B", exec=False)
+    k16 = g.call("Concat_StrStr", KSL_STR, pos=(4700, -1700)); g.wire(k15, "ReturnValue", k16, "A", exec=False); g.typed_input(k16, "B", " cd=", "string")
+    k17 = g.call("Concat_StrStr", KSL_STR, pos=(4880, -1700)); g.wire(k16, "ReturnValue", k17, "A", exec=False); g.wire(cds, "ReturnValue", k17, "B", exec=False)
     # append (only reached on cast success -> humanoid followers only)
     otGet = g.var_get("OverlayText", "string", pos=(2000, -1060))
-    appc = g.call("Concat_StrStr", KSL_STR, pos=(4180, -1460)); g.wire(otGet, "OverlayText", appc, "A", exec=False); g.wire(k12, "ReturnValue", appc, "B", exec=False)
-    setOT = g.var_set("OverlayText", "string", pos=(4380, -1160))
+    appc = g.call("Concat_StrStr", KSL_STR, pos=(5060, -1460)); g.wire(otGet, "OverlayText", appc, "A", exec=False); g.wire(k17, "ReturnValue", appc, "B", exec=False)
+    setOT = g.var_set("OverlayText", "string", pos=(4560, -1160))
     g.wire(appc, "ReturnValue", setOT, "OverlayText", exec=False)
-    g.wire(castCtrlOv, "then", setOT, "execute", exec=True)
+    g.wire(castCtrlOv, "then", hvt, "execute", exec=True)   # cast ok -> target (impure)...
+    g.wire(hvt, "then", cdc, "execute", exec=True)          # ...-> cooldown (also impure)...
+    g.wire(cdc, "then", setOT, "execute", exec=True)        # ...-> append
     # loop done -> SetText(Body, OverlayText)
     otGet2 = g.var_get("OverlayText", "string", pos=(2000, -940))
     conv = g.call("Conv_StringToText", KTL, pos=(2220, -940))
