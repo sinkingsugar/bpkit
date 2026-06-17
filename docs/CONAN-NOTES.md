@@ -103,8 +103,17 @@ fully **reflected** to Python, which is how it was audited.
   undoes a *one-shot* movement freeze on a stowed/seated follower — see the cosmetic-rider
   recipe's freeze bullet. **Triggers in the cooked game, rarely in PIE** (PIE's small
   always-loaded world keeps followers close enough to never trip it).
+  - **CORRECTION (v46, 2026-06-17): the dismount "won't attack" bug was the MOVEMENT MODE, not the
+    leash.** The real cause: restore un-froze the follower with `SetMovementMode(MOVE_Walking)` (1), but
+    AI followers path/fight on the navmesh = `MOVE_NavWalking` (2) — in plain Walking the AI can't path
+    to targets. Fix = restore to `MOVE_NavWalking`. The leash/catch-up work below (v43–v45) was a red
+    herring (an on-screen debug overlay showed leash/engagement were normal while it failed; only `move`
+    was wrong). See [CONAN-AI.md](CONAN-AI.md) §Application. The general rule still holds — *anything you
+    induce on a follower while seated must have a matching undo on restore, INCLUDING the exact movement
+    mode (NavWalking, not Walking)*. The v43–v45 calls below remain as harmless belt.
   - **Fighting catch-up per-tick JAMS the follower AI — stow and restore MUST be symmetric** (v43,
-    AstroCat 2026-06-15). The seated-follower freeze re-pins `MOVE_None` *every tick* to beat the
+    AstroCat 2026-06-15; **superseded — see the CORRECTION above; this was not the real cause**). The
+    seated-follower freeze re-pins `MOVE_None` *every tick* to beat the
     leash re-enable. That keeps the catch-up state machine perpetually mid-`wait_for_catch_up_time`:
     it never registers a successful catch-up. If restore only re-enables movement/collision/anim and
     **doesn't reset that AI state**, the follower comes off the saddle **inert — won't follow orders,

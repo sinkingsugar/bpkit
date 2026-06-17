@@ -120,34 +120,37 @@ order: `ConanAttackerAIController.clear_command()`.
 
 ---
 
-## Application: mounted-followers stow/restore as a push/pop
-A seated follower is actor-attached to a horse and frozen (`MOVE_None`, collision off,
-single-node saddle anim). The horse drags it far from the owner, so the leash AI fires;
-the v32 fix re-pins `MOVE_None` every tick to keep it on the saddle. That per-tick fight
-**jams the catch-up machine** and leaves `BT_Leashing` (with its engagement override)
-installed, so after dismount the follower is stuck PASSIVE/DEFENSIVE — won't auto-engage,
-fights only when directly hit, "self-heals" once it eventually re-aggros (AstroCat,
-2026-06). Cook-only; never reproduces in PIE.
+## Application: mounted-followers — the dismount-AI bug (ACTUAL root cause, v46)
 
-**Fix history (each was a partial, restore-side patch):**
-- v43 — `try_resume_from_catch_up_time()` + `cancel_any_forced_movement()` on restore.
-- v44 — `reset_all_behavior_subtrees_to_default()` on restore.
-- v45 — **the game's own push/pop**, replacing the guesses:
-  - **STOW (push):** `ConanAttackerAIController.set_should_not_leash(true)` — the leash never
-    trips while seated → catch-up never engages → nothing to jam.
-  - **RESTORE (pop):** `set_should_not_leash(false)` + `finish_leashing()` — re-enable and run
-    the game's own clean leash-exit (the `BTTask_FinishLeashing` path).
+Symptom: after a mount/dismount cycle a follower gets hit but **won't engage** ("attack on
+sight" looks dead), intermittently, in the first combats after dismount; a never-mounted
+follower is fine. **THE CAUSE — the movement mode.** A seated follower is frozen with
+`MOVE_None`; both restore paths un-froze it with **`SetMovementMode(MOVE_Walking)` (1)**. But
+AI followers **path and fight on the navmesh = `MOVE_NavWalking` (2)**; `MOVE_Walking` is
+physics-walking (how players move), and in it the AI **can't path to targets** → it stands
+there taking hits. Fix (v46): restore to **`MOVE_NavWalking`**, not `MOVE_Walking`. This was
+the original v1 bug (restore always used Walking); the intermittency was whether the AI
+self-recovered 1→2. **Diagnostic signature: `MovementMode==1` after dismount = broken;
+`==2` = healthy.** (`EMovementMode`: 0 None, 1 Walking, 2 NavWalking, 3 Falling.)
 
-**The v32 per-tick maintain pass STAYS — it is not redundant after the leash gate.** It
-re-pins `MOVE_None` *and* re-asserts the saddle relative transform every tick, and the
-game **teleports thralls/horses on its own** (catch-up teleport, `should_teleport_when_following`,
-server position corrections) regardless of leashing. The transform re-assert is what snaps a
-teleported seated follower back onto the saddle; the `MOVE_None` re-pin catches any movement-mode
-flip a teleport/correction brings. So the maintain pass is load-bearing for position recovery,
-*independent* of the AI jam. v45's leash gate is **purely additive**: it kills the leash-induced
-AI jam; the maintain pass keeps doing its real (teleport/position) job. Do NOT "simplify" it away.
+**The leash theories (v43–v45) were a RED HERRING.** `is_ai_controller_leashing`,
+engagement behaviour, behaviour subtrees — an on-screen debug overlay (see below) showed those
+were all *normal* while the follower failed; only the movement mode was wrong. v43
+(`try_resume_from_catch_up_time`+`cancel_any_forced_movement`), v44
+(`reset_all_behavior_subtrees_to_default`), v45 (`set_should_not_leash`/`finish_leashing`) stay
+as harmless belt, but they were never the fix. **Lesson: don't pattern-match a symptom word
+("passive") to an API — measure the actual state.** We were blind for three versions because
+the leash never trips in PIE; the bug was movement-mode all along and *did* reproduce in PIE
+once we looked at `MovementMode`.
 
-General rule (holds for any "I parked an NPC's AI" mod): **don't hand-list undos —
-disable the offending subsystem with its own gate on the way in, and call the game's own
-finisher on the way out.** Symmetric, and immune to us forgetting a piece. (But keep the
-mechanical freeze/re-assert that defends against the engine moving the actor underneath you.)
+**What actually cracked it: building observability.** A persistent in-game UMG overlay
+(`WBP_DebugOverlay` + the manager's `OVERLAY` flag) that dumps each humanoid follower's live
+state — `eng / leash / move / seat / atk / combat / tgt / fol / cd` — on screen, built in BP so
+it survives Shipping (PrintString/GetAll are stripped). `move=1` vs `move=2` was invisible until
+it was on screen. Keep this overlay (flip `OVERLAY=True`) as the first move for any future
+follower-AI bug. (It's authored with bpkit's UMG capability — see INTERNALS.md §11.)
+
+**The v32 per-tick maintain pass STAYS** — it re-pins `MOVE_None` *and* re-asserts the saddle
+transform every tick, defending against the engine teleporting/correcting the seated actor
+(`should_teleport_when_following`, catch-up teleport, server corrections), independent of any AI
+theory. Do NOT "simplify" it away.
