@@ -593,7 +593,11 @@ def scratch_blueprint(pkg="/Game/_Scratch", name="BP_Scratch", parent=None):
     import unreal
     path = pkg + "/" + name
     eal = unreal.EditorAssetLibrary
-    bp = eal.load_asset(path) if eal.does_asset_exist(path) else None
+    # load_asset is the source of truth (returns the asset if present, None if absent). does_asset_exist
+    # proved UNRELIABLE -- it can return False for an asset that loads fine (asset-registry staleness
+    # after heavy asset churn, even post force-rescan). Gating create on it wrongly tried to create OVER
+    # an existing asset, which then failed. So: load first, create only if truly absent.
+    bp = eal.load_asset(path)
     if bp is None:
         factory = unreal.BlueprintFactory()
         factory.set_editor_property("parent_class", parent or unreal.Actor)
