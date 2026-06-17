@@ -44,21 +44,28 @@ DT_CMD_OBJ = MOD.full(MOD.CMD_TABLE)                              # our 1-row co
 _ccc = MOD.CUSTOM_CMD_TABLE
 CUSTOM_CMD_OBJ = "%s.%s" % (_ccc, _ccc.rsplit("/", 1)[1])        # game's CustomConsoleCommandsDataTable
 
-# === DIAGNOSTIC FLAGS (see README §Debugging) ===
-# DEBUG: PIE-only PrintString beacons at the one-shot beats (caps/stow/sweep/rescue + leash
-#   catch). On screen + log + `~` console. PrintString is compiled OUT of Shipping (screen,
-#   log AND console -- a shipped build logs NOTHING from BP), so these never reach players --
-#   but flip False for the release deploy to keep the graph lean.
+# === DIAGNOSTIC FLAGS (see README Debugging section) ===
+# DEBUG: console PrintString beacons at the one-shot beats (caps/stow/sweep/rescue + leash catch).
+#   KEEP THIS ON ALWAYS (Giovanni 2026-06-17): it's console-only (not a HUD banner), ONE-SHOT per
+#   beat (not per-tick, so not spammy), and PrintString is compiled OUT of Shipping anyway -- players
+#   never see it, but it's there for dev/PIE/test cooks. Only OVERLAY below is the release toggle.
 # HUD_DIAG: optional SHIP-VISIBLE HUDShowFIFO banner ("kept a rider seated", once per ride)
 #   when the maintain pass catches the leash AI re-mobilizing a seated rider -- the ONLY
 #   channel that survives Shipping (proven v26-v32). Default OFF: the shipped mod is silent.
-DEBUG = False
+DEBUG = True
 HUD_DIAG = False
 # OVERLAY: reusable in-game debug overlay (UMG WBP_DebugOverlay, a persistent on-screen text panel
 #   that survives Shipping -- unlike PrintString). Built client-side on the render path. SPIKE STAGE:
 #   currently just creates the widget + shows a static "alive" string to prove the BP create/show pipe
 #   (Python can't init UMG widgets -- CreateWidget is BP-only). Next: pump the follower-AI state string.
-OVERLAY = False  # in-game debug overlay (live follower-AI readout). OFF for release; flip True to diagnose.
+OVERLAY = False  # in-game debug overlay (live follower-AI readout). ON while diagnosing; OFF for release.
+# POSE: the saddle pose. PROVEN 2026-06-17: the OLD SingleNode pose (SetAnimationMode SingleNode<->AnimBP)
+#   re-init'd the follower's AnimBP on every dismount and wedged the AI (lethargic, won't path to enemies).
+#   Now the pose is a CLIENT-LOCAL slot MONTAGE (Fullbody3rd) played OVER the running AnimBP in the cosmetic
+#   loop -- no SetAnimationMode, so no re-init -> the AI stays active. The server does NO anim. Driven off
+#   the native-replicated actor-attach (replicate STATE, animate locally). Set False to disable the pose
+#   entirely (followers ride un-posed but fully active) for A/B.
+POSE = True
 
 # edit in place (reuse if present) -- deleting+recreating leaves a stale redirector
 # that blocks recreate; the manager uses override EVENTS (not custom events) so
@@ -156,69 +163,15 @@ def dbg(msg, pos):                  return mf.dbg(g, msg, pos, MOD.MGR_VERSION)
 def txt_lit(s, pos):                return mf.txt_lit(g, s, pos)
 def fifo(txt_node, pos):            return mf.fifo(g, txt_node, pos)
 
-# === v45 helpers: leash push/pop (Conan's OWN primitives) + console state dump ===============
-# The follower-AI jam is LEASHING. While seated we re-pin MOVE_None every tick, which fights Conan's
-# catch-up/leash AI and JAMS it -- the follower comes off the saddle stuck on BT_Leashing (combat
-# suppressed, engagement overridden to PASSIVE/DEFENSIVE) and won't auto-engage until it re-aggros
-# (AstroCat 2026-06; cook-only -- the leash never trips in PIE). v43 (try_resume+cancel) and v44
-# (reset_all_subtrees) were piecemeal restore-side guesses. v45 uses Conan's OWN pair, found by
-# dumping BTTask_FinishLeashing + reflecting the ConanAttackerAIController surface (docs/CONAN-AI.md):
-#   STOW push   -> SetShouldNotLeash(true): the leash never trips while seated, so catch-up never
-#                  engages and there is nothing to jam (the per-tick MOVE_None re-pin is now belt).
-#   RESTORE pop -> SetShouldNotLeash(false) + FinishLeashing(): re-enable leashing and run the game's
-#                  own clean leash-exit -- exactly what Conan's BT_Leashing finish task calls.
-# Both live on ConanAttackerAIController (HumanAIController extends it): GetController -> cast -> call.
-# A follower whose controller isn't a ConanAttackerAIController fails the cast and is skipped (terminal).
+# === controller constants (for the debug overlay) + console state dump =======================
+# The v43-v45 LEASH push/pop (SetShouldNotLeash / FinishLeashing / try_resume / reset_subtrees) was
+# REMOVED -- it was a red herring (the overlay showed leash/engagement/subtree were normal while the
+# follower failed). The dismount bug is the movement mode (v46 NavWalking) and/or the AnimBP re-init,
+# not leashing. These constants stay for the debug overlay's GetController -> cast ConanAttackerAIController.
 PAWN = "/Script/Engine.Pawn"
 ATKCTRL = "/Script/ConanSandbox.ConanAttackerAIController"
 ATKCAST = "AsConan Attacker AIController"   # DynamicCast success pin (verified in BTTask_FinishLeashing)
 KSL_STR = "/Script/Engine.KismetStringLibrary"
-
-def bool_lit(val, pos):
-    """Revert-proof bool literal: MakeLiteralBool(unset)=false; Not_PreBool flips it to true. (A wired
-    pin can't silently revert to its autogen default the way a set pin-default can -- bp_ir bool gap.)"""
-    mk = g.call("MakeLiteralBool", KSL, pos=pos)
-    if not val:
-        return mk, "ReturnValue"
-    nt = g.call("Not_PreBool", KML, pos=(pos[0] + 190, pos[1]))
-    g.wire(mk, "ReturnValue", nt, "A", exec=False)
-    return nt, "ReturnValue"
-
-def _ctrl_cast(fol, fol_pin, pos):
-    """GetController (pure) -> cast ConanAttackerAIController. Returns the cast node (exec ENTRY --
-    wire the running exec into its 'execute'; cast-fail dead-ends -> the follower is skipped)."""
-    x, y = pos
-    getc = g.call("GetController", PAWN, pos=(x, y + 220))
-    g.wire(fol, fol_pin, getc, "self", exec=False)
-    cst = g.cast(ATKCTRL, pos=(x + 230, y))
-    g.wire(getc, "ReturnValue", cst, "Object", exec=False)
-    return cst
-
-def no_leash_on(fol, fol_pin, pos):
-    """STOW push: SetShouldNotLeash(true) on the follower's controller. Returns the cast (exec entry)."""
-    x, y = pos
-    cst = _ctrl_cast(fol, fol_pin, pos)
-    noL = g.call("SetShouldNotLeash", ATKCTRL, pos=(x + 490, y))
-    tn, tp = bool_lit(True, (x + 300, y + 260))
-    g.wire(tn, tp, noL, "NewShouldNotLeash", exec=False)
-    g.wire(cst, ATKCAST, noL, "self", exec=False)
-    g.wire(cst, "then", noL, "execute", exec=True)
-    return cst
-
-def restore_leash(fol, fol_pin, pos):
-    """RESTORE pop: SetShouldNotLeash(false) + FinishLeashing() -- Conan's own clean leash-exit
-    (mirrors BTTask_FinishLeashing). Returns the cast (exec entry)."""
-    x, y = pos
-    cst = _ctrl_cast(fol, fol_pin, pos)
-    noL = g.call("SetShouldNotLeash", ATKCTRL, pos=(x + 490, y))
-    fn, fp = bool_lit(False, (x + 300, y + 260))
-    g.wire(fn, fp, noL, "NewShouldNotLeash", exec=False)
-    g.wire(cst, ATKCAST, noL, "self", exec=False)
-    g.wire(cst, "then", noL, "execute", exec=True)
-    fin = g.call("FinishLeashing", ATKCTRL, pos=(x + 760, y))
-    g.wire(cst, ATKCAST, fin, "self", exec=False)
-    g.wire(noL, "then", fin, "execute", exec=True)
-    return cst
 
 def dump_ai(fol, fol_pin, pos):
     """DEBUG console line via PrintString (our dbg channel): 'MF vN dismount leash=<b>' -- the
@@ -256,9 +209,24 @@ bAttMC = g.branch(pos=(1050, -1300))
 g.wire(castMC, "then", bAttMC, "execute", exec=True)
 g.wire(parVMC, "ReturnValue", bAttMC, "Condition", exec=False)
 meshMC = comp_of(castMC, "AsConan Character", "Mesh", (1300, -1450))
-amMC = bare_call("SetAnimationMode", SMC, (1300, -1300))
-set_default(amMC, "InAnimationMode", "AnimationSingleNode", "byte", enum="EAnimationMode")
-g.wire(meshMC, "Mesh", amMC, "self", exec=False)
+# CLIENT-LOCAL SADDLE POSE (the replication insight, 2026-06-17): we do NOT replicate the animation -- we
+# replicate the STATE (the actor-attach, which is native-replicated) and each render instance poses ITSELF
+# here. Mechanism: a SLOT MONTAGE on Fullbody3rd played OVER the running AnimBP -- NOT SetAnimationMode(
+# SingleNode), which destroyed+rebuilt the AnimBP on dismount and wedged the AI (the lethargy bug). A
+# dynamic montage "doesn't replicate" (CONAN-NOTES) -- irrelevant: we play it locally per client, not
+# server->client. Shared PURE reads (used by BOTH the seat + un-seat branches):
+if POSE:
+    aiMC = g.call("GetAnimInstance", SMC, pos=(1550, -1480))
+    g.wire(meshMC, "Mesh", aiMC, "self", exec=False)
+    animMC = var_self("MountIdleAnim", (1550, -1660))
+    slotMC = g.call("MakeLiteralName", KSL, pos=(1550, -1760))
+    g.typed_input(slotMC, "Value", "Fullbody3rd", "name")
+    # is OUR saddle anim already playing on the slot? precise guard -> never stops the follower's COMBAT
+    # montages on the same slot, and stops the per-tick loop from restarting the pose every frame.
+    isPlayMC = g.call("IsPlayingSlotAnimation", "/Script/Engine.AnimInstance", pos=(1750, -1560))
+    g.wire(aiMC, "ReturnValue", isPlayMC, "self", exec=False)
+    g.wire(animMC, "MountIdleAnim", isPlayMC, "Asset", exec=False)
+    g.wire(slotMC, "ReturnValue", isPlayMC, "SlotNodeName", exec=False)
 # EXCLUDE THE PLAYER. Historically authored as GetPlayerState+IsValid ("replicates, unlike
 # IsPlayerControlled") -- but GetPlayerState is NOT a UFUNCTION in this build and the paste
 # SILENTLY DROPPED it since v30: the exclusion has always been a no-op at runtime (harmless,
@@ -291,30 +259,48 @@ g.wire(castParMC, "AsConan Character", parMtblMC, "self", exec=False)
 bParMtblMC = g.branch(pos=(1750, -1300))   # cast-fail (parent not a ConanCharacter) dead-ends -> skip
 g.wire(castParMC, "then", bParMtblMC, "execute", exec=True)
 g.wire(parMtblMC, "ReturnValue", bParMtblMC, "Condition", exec=False)
-g.wire(bParMtblMC, "then", amMC, "execute", exec=True)   # parent IS a mountable horse -> seat
-plMC = bare_call("PlayAnimation", SMC, (1550, -1300))
-set_default(plMC, "bLooping", "true", "bool")
-animMC = var_self("MountIdleAnim", (1300, -1600))
-g.wire(animMC, "MountIdleAnim", plMC, "NewAnimToPlay", exec=False)
-g.wire(meshMC, "Mesh", plMC, "self", exec=False)
-g.wire(amMC, "then", plMC, "execute", exec=True)
-# RESET branch: not attached -> AnimBlueprint. Un-seats dismounted followers on CLIENTS (Pass D's
-# server-side reset doesn't replicate). CRITICAL: bForceInitAnimScriptInstance=FALSE. The default
-# (true) RE-INITS the AnimBP on EVERY call even when the mode is already AnimationBlueprint (the
-# engine doc says so explicitly). Running this on every unattached ConanCharacter each tick
-# therefore reinitialized EVERY character's AnimBP every frame -> all animations broke (player +
-# thralls + NPCs). With force=false it's a genuine no-op unless the char is actually in SingleNode
-# (a previously-seated follower), which it then restores exactly once.
-amResetMC = bare_call("SetAnimationMode", SMC, (1500, -1100))
-set_default(amResetMC, "InAnimationMode", "AnimationBlueprint", "byte", enum="EAnimationMode")
-# bForceInitAnimScriptInstance MUST be false. A pin *default* for it silently reverts to the
-# autogen 'true' on reconstruction (bp_ir bool-default gap -- verified: v28 shipped it as true,
-# hence "no change"), so WIRE a literal false; a wired pin cannot revert. MakeLiteralBool with an
-# unset Value returns false.
-falseLit = g.call("MakeLiteralBool", KSL, pos=(1280, -1000))
-g.wire(falseLit, "ReturnValue", amResetMC, "bForceInitAnimScriptInstance", exec=False)
-g.wire(meshMC, "Mesh", amResetMC, "self", exec=False)
-g.wire(bAttMC, "else", amResetMC, "execute", exec=True)
+if POSE:
+    # parent IS a mountable horse. FIRST re-apply the saddle relative transform LOCALLY on this client.
+    # The server sets it too, but AttachmentReplication only carries the relative xform at attach time --
+    # the per-tick server re-assert never re-reaches a simulated proxy, so the REMOTE view had the thrall
+    # rotated wrong. Each client owns the cosmetic xform from data it already has (it's attached to our
+    # horse), so set it here every seated tick. Same offsets as the server stow (loc 0,0,90; yaw 90).
+    relLocMC = bare_call("K2_SetActorRelativeLocation", ACTOR, (1950, -1450))
+    rlpMC = relLocMC.pin("NewRelativeLocation"); rlpMC.dir = "EGPD_Input"
+    type_struct(rlpMC, "/Script/CoreUObject.Vector"); rlpMC.set("DefaultValue", '"0.000000,0.000000,90.000000"')
+    g.wire(loopMC, "Array Element", relLocMC, "self", exec=False)
+    g.wire(bParMtblMC, "then", relLocMC, "execute", exec=True)
+    relRotMC = bare_call("K2_SetActorRelativeRotation", ACTOR, (2050, -1450))
+    rrpMC = relRotMC.pin("NewRelativeRotation"); rrpMC.dir = "EGPD_Input"
+    type_struct(rrpMC, "/Script/CoreUObject.Rotator"); rrpMC.set("DefaultValue", '"0.000000,90.000000,0.000000"')
+    g.wire(loopMC, "Array Element", relRotMC, "self", exec=False)
+    g.wire(relLocMC, "then", relRotMC, "execute", exec=True)
+    # then pose: if not already posing, start the looping saddle montage (over the AnimBP)
+    bPlayMC = g.branch(pos=(2150, -1300))
+    g.wire(relRotMC, "then", bPlayMC, "execute", exec=True)
+    g.wire(isPlayMC, "ReturnValue", bPlayMC, "Condition", exec=False)
+    playMC = g.call("PlaySlotAnimationAsDynamicMontage", "/Script/Engine.AnimInstance", pos=(2400, -1300))
+    g.wire(bPlayMC, "else", playMC, "execute", exec=True)   # not already playing -> start it
+    g.wire(aiMC, "ReturnValue", playMC, "self", exec=False)
+    g.wire(animMC, "MountIdleAnim", playMC, "Asset", exec=False)
+    g.wire(slotMC, "ReturnValue", playMC, "SlotNodeName", exec=False)
+    # LoopCount must be HUGE, not 0: loop_count=0 plays the 4s clip ONCE then the guard re-plays it ->
+    # a blend-out/in hitch every 4s (the "bob"). A big count loops it INTERNALLY (seamless) -> no boundary.
+    g.typed_input(playMC, "LoopCount", "1000000", "int")
+# (POSE=False: bParMtblMC.then dead-ends -- no pose; followers stay on their AnimBP, fully active)
+# UN-SEAT branch: not attached -> stop OUR saddle montage if it's the thing on the slot. The precise
+# IsPlayingSlotAnimation guard means we NEVER stop the follower's COMBAT montages here. No SetAnimationMode
+# anywhere anymore -> nothing re-inits the AnimBP -> dismounted followers stay active. (Replaces the old
+# SetAnimationMode(AnimBlueprint) reset, which was a re-init source.)
+if POSE:
+    bStopMC = g.branch(pos=(1900, -1100))
+    g.wire(bAttMC, "else", bStopMC, "execute", exec=True)
+    g.wire(isPlayMC, "ReturnValue", bStopMC, "Condition", exec=False)
+    stopMC = g.call("StopSlotAnimation", "/Script/Engine.AnimInstance", pos=(2150, -1100))
+    g.wire(bStopMC, "then", stopMC, "execute", exec=True)   # our pose IS playing -> stop it (un-seat)
+    g.wire(aiMC, "ReturnValue", stopMC, "self", exec=False)
+    g.wire(slotMC, "ReturnValue", stopMC, "SlotNodeName", exec=False)
+# (POSE=False: bAttMC.else dead-ends -- no pose was applied, so nothing to undo)
 
 tick = g.event("ReceiveTick")
 # v41 PERF: the OLD tick blindly ran GetAllActorsOfClass(ConanCharacter) -- O(every player + thrall +
@@ -805,12 +791,8 @@ rotpM = setRotM.pin("NewRelativeRotation"); rotpM.dir = "EGPD_Input"
 type_struct(rotpM, "/Script/CoreUObject.Rotator"); rotpM.set("DefaultValue", '"0.000000,90.000000,0.000000"')
 g.wire(loopB, "Array Element", setRotM, "self", exec=False)
 g.wire(setRelM, "then", setRotM, "execute", exec=True)
-# v45 PUSH: gate leashing OFF while seated, re-asserted every tick right alongside the MOVE_None
-# re-pin. With the leash gated, Conan's catch-up AI never engages on the horse-dragged seated
-# follower -> the state machine can't jam -> the follower comes off the saddle clean. (The MOVE_None
-# re-pin above is now belt-and-suspenders; SetShouldNotLeash is the actual root-cause cure.)
-cstLeashM = no_leash_on(loopB, "Array Element", (4600, 1500))
-g.wire(setRotM, "then", cstLeashM, "execute", exec=True)
+# (v45 leash gate removed -- moot. The maintain pass is just the MOVE_None re-pin + saddle-transform
+# re-assert above; setRotM's exec ends the maintain chain.)
 
 # STOW (unseated): claim SpareHorses[HumanoidCounter]; only if the counter is in range
 # ("not enough horses" leaves the extras walking, by design). GUARD is an int-range test --
@@ -861,16 +843,9 @@ nocol = bare_call("SetActorEnableCollision", ACTOR, (5250, 1850))
 set_default(nocol, "bNewActorEnableCollision", "false", "bool")
 g.wire(loopB, "Array Element", nocol, "self", exec=False)
 chain.then(nocol)
-amode = bare_call("SetAnimationMode", SMC, (5500, 1850))
-set_default(amode, "InAnimationMode", "AnimationSingleNode", "byte", enum="EAnimationMode")
-g.wire(rMeshB, "Mesh", amode, "self", exec=False)
-chain.then(amode)
-play = bare_call("PlayAnimation", SMC, (5750, 1850))
-set_default(play, "bLooping", "true", "bool")
-animGet = var_self("MountIdleAnim", (5500, 2100))
-g.wire(animGet, "MountIdleAnim", play, "NewAnimToPlay", exec=False)
-g.wire(rMeshB, "Mesh", play, "self", exec=False)
-chain.then(play)
+# (NO server-side pose anim: posing is client-local via the cosmetic-loop slot montage above. The server
+#  only attaches + freezes (MOVE_None) + drops collision; it NEVER touches the AnimBP -> the AI stays
+#  active. The old SingleNode pose here re-init'd the AnimBP on every dismount = the lethargy bug.)
 # advance the counter so the NEXT humanoid takes the NEXT spare horse -> distinct mounts
 hcGet2 = g.var_get("HumanoidCounter", "int", pos=(6000, 2100))
 addHC = g.call("Add_IntInt", KML, pos=(6000, 2000)); g.wire(hcGet2, "HumanoidCounter", addHC, "A", exec=False)
@@ -943,16 +918,10 @@ colD0 = bare_call("SetActorEnableCollision", ACTOR, (4050, 3050))
 set_default(colD0, "bNewActorEnableCollision", "true", "bool")
 g.wire(loopDist, "Array Element", colD0, "self", exec=False)
 g.wire(walkD0, "then", colD0, "execute", exec=True)
-# v45: same leash pop as the global sweep -- the orphan/statue-rescue path also needs the follower's
-# leash re-enabled + cleanly exited, not just movement+collision back. SetShouldNotLeash(false) +
-# FinishLeashing() (replaces v43 try_resume/cancel + v44 reset_all_subtrees).
-rescTail, rescPin = colD0, "then"
+# (v45 leash pop removed -- moot.) Statue rescue = movement + collision back (above); optional DEBUG line.
 if DEBUG:
     dbgResc = dbg("statue rescue (unfroze a stranded rider)", (4300, 3050))
     g.wire(colD0, "then", dbgResc, "execute", exec=True)
-    rescTail, rescPin = dbgResc, "then"
-cstD = restore_leash(loopDist, "Array Element", (4600, 3050))
-g.wire(rescTail, rescPin, cstD, "execute", exec=True)
 
 # === GLOBAL RESTORE SWEEP (after the player loop): any humanoid still seated on a horse NO
 # mounted player legitimized this tick (ActiveSeats) gets restored. ONE restore path covers
@@ -1020,10 +989,8 @@ chainG = Chain(bActiveG, "else")                          # NOT legitimized -> r
 detachG = actor_detach((2250, 3700))   # ACTOR-detach from the horse (replicates), keep world xform
 g.wire(castG, "AsConan Character", detachG, "self", exec=False)
 chainG.then(detachG)
-amodeG = bare_call("SetAnimationMode", SMC, (2500, 3700))
-set_default(amodeG, "InAnimationMode", "AnimationBlueprint", "byte", enum="EAnimationMode")
-g.wire(rMeshG, "Mesh", amodeG, "self", exec=False)
-chainG.then(amodeG)
+# (NO server-side anim restore: the server never put the follower into SingleNode, so the AnimBP was
+#  never touched -> nothing to restore. The client un-poses itself via the cosmetic-loop StopSlotAnimation.)
 walkG = bare_call("SetMovementMode", CMC, (2750, 3700))
 # v46 ROOT-CAUSE FIX: MOVE_NavWalking (2), not MOVE_Walking (1) -- see the statue-rescue note above.
 # This is THE dismount-AI bug: restore left the follower in physics-Walking, where the AI can't path/fight.
@@ -1034,17 +1001,11 @@ colG = bare_call("SetActorEnableCollision", ACTOR, (3000, 3700))
 set_default(colG, "bNewActorEnableCollision", "true", "bool")
 g.wire(castG, "AsConan Character", colG, "self", exec=False)
 chainG.then(colG)
-# v45: POP THE LEASH -- the matched counterpart of the stow's SetShouldNotLeash(true) push. The seated
-# maintain pass disabled leashing while seated; here we re-enable it AND run Conan's own clean leash-exit
-# so the post-dismount leash behaves like a normal follower's (the catch-up machine is never left jammed).
-# SetShouldNotLeash(false) + FinishLeashing() is exactly what Conan's BT_Leashing finish task calls --
-# it clears the leash subtree + its engagement-behaviour override the way the game does (replaces v43's
-# TryResume/Cancel + v44's ResetAllBehaviorSubtreesToDefault). Cooked/real-server only -- no leash in PIE.
+# (v45 leash pop removed -- moot.) Restore = detach + anim + movement + collision (above). The optional
+# DEBUG line dumps the follower's leash state at dismount (still a useful read even though we don't touch it).
 if DEBUG:
     chainG.then(dump_ai(castG, "AsConan Character", (3300, 3450)))   # console: leash state at dismount
     chainG.then(dbg("sweep-restored a rider (dismount/orphan)", (4550, 3700)))
-# ungated; terminal (cast-fail = controller isn't a ConanAttackerAIController -> skip).
-chainG.then(restore_leash(castG, "AsConan Character", (4900, 3700)))
 
 # Build the EventGraph through the harness: clear + inject (auto-relinks any wire the engine
 # drops on paste -- the GetArrayItem.Output class) + compile + save + full scan (dropped

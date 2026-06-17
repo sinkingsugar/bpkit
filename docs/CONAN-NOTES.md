@@ -281,26 +281,31 @@ Attach + freeze + pose, all content-only and scriptable from Blueprint:
   command_follower(follower, loc, AIFollowerOrderType.HOLD)` to stop it at the source.
   **Cook-ONLY repro** (never PIE) → test packaged, with `HUDShowFIFO` not `PrintString`.
   (live-verified v32, cooked SP 2026-06-09)
-- **Pose:** force a seated single-node anim over the AnimBP —
-  `set_animation_mode(ANIMATION_SINGLE_NODE)` + `play_animation(anim, loop=True)`
-  after `stop_all_montages`. Idle clip:
-  `/Game/Characters/humans/animations/mounted/Horse/A_human_mounted_idle_HORSE`
-  (matches `SK_human_Skeleton`). 404 mounted/riding sequences ship in the kit.
-- **Restore:** reverse — `ANIMATION_BLUEPRINT`, `MOVE_Walking`, collision on,
-  re-attach mesh → capsule, and **restore the saved relative transform** (save
-  `mesh.GetRelativeTransform()` *before* reparenting; re-attaching with
-  `SnapToTarget` snaps to the capsule center → rider floats ~96u up). Run Stow
-  **once** per mount — re-running while stowed re-saves the (attached, ~zero)
-  transform and corrupts the restore.
-- **Never call `SetAnimationMode(AnimationBlueprint)` with force-init each tick.** The
-  client-side un-seat loop runs over *every* `ConanCharacter` every frame; the reset
-  branch flips non-seated ones back to `AnimationBlueprint`. `SetAnimationMode`'s
-  `bForceInitAnimScriptInstance` defaults **true**, which **re-inits the AnimBP even
-  when the mode is unchanged** → it reinitialized *every* character's AnimBP every
-  frame and broke all animations (player + thralls + NPCs). Pass `false` so it's a real
-  no-op for already-AnimBP characters (only a still-SingleNode follower actually
-  switches). And because a bool *default* silently reverts to autogen on paste, **wire**
-  the `false` (`MakeLiteralBool`), don't default it — see INTERNALS §typed-pin.
+- **Pose — do NOT use SingleNode. This WAS the intermittent dismount-AI bug (MP-confirmed 2026-06-17,
+  v47).** Posing with `set_animation_mode(ANIMATION_SINGLE_NODE)` + `play_animation` (the v1–v46 way)
+  **destroys + rebuilds the follower's AnimBP on every dismount** — the SingleNode→AnimBlueprint switch
+  re-inits it regardless of `bForceInitAnimScriptInstance` — and the fresh AnimBP **wedges the AI**, so
+  the dismounted follower goes *lethargic* (won't path to or engage enemies). Was mis-diagnosed as
+  leashing (v43–v45) and movement-mode (v46, NavWalking — necessary but **not** sufficient); the real
+  cause is the anim-mode swap.
+- **Pose — correct (v47):** play the seated idle as a **slot MONTAGE over the running AnimBP** (no mode
+  switch → no re-init): `play_slot_animation_as_dynamic_montage(idle, "Fullbody3rd", loop_count=1000000)`,
+  guarded by `is_playing_slot_animation(idle, "Fullbody3rd")` (play if not posing; `stop_slot_animation`
+  on un-seat — *precise* to our anim so it never stomps the follower's combat montages on the same slot).
+  `loop_count` has **no infinite flag** (0 clamps to 1 = a one-shot → a ~4s "bob" as the guard re-plays);
+  a big finite count loops it internally/seamlessly. Idle clip
+  `/Game/Characters/humans/animations/mounted/Horse/A_human_mounted_idle_HORSE` (`enable_root_motion=False`,
+  4s; matches `SK_human_Skeleton`).
+- **Posing is CLIENT-LOCAL** (cosmetic loop, off the replicated attach); the server does **no** follower
+  anim at all (attach + `MOVE_None` + collision-off only), so the AnimBP is never touched server-side and
+  the AI stays active everywhere — incl. a dedicated server (no render → no cosmetic loop → no pose, AI fine).
+- **Restore:** detach (`KeepWorld`) + `MOVE_NavWalking` (AI paths/fights on the navmesh — NOT `MOVE_Walking`,
+  v46) + collision on. **No anim restore** (the AnimBP was never switched). Run Stow **once** per mount;
+  re-running while stowed corrupts the relative transform. (`SnapToTarget` re-attach floats the rider ~96u
+  up → set the saddle relative loc/rot explicitly; see the MP note on doing it client-side.)
+- **(Historical gotcha, now moot)** `SetAnimationMode(AnimationBlueprint)`'s `bForceInitAnimScriptInstance`
+  defaults **true** and re-inits the AnimBP even when the mode is unchanged — never call it per-tick (it
+  broke every character's anims at v28). We no longer switch anim mode at all, so this can't bite us now.
 
 ## Multiplayer / replication (the crux of the MP build)
 
@@ -310,21 +315,32 @@ Attach + freeze + pose, all content-only and scriptable from Blueprint:
   on clients** even with `RemoteRole == SimulatedProxy`. This was the root cause of
   every "host-only" symptom. Fix: CDO `always_relevant = True`.
 - **ModController does not tick on clients** unless made relevant → apply cosmetics
-  (the seated single-node pose) **locally on each client** in a non-gated loop from
-  replicated state; keep gameplay server-only behind `HasAuthority`. Add a reset
-  branch (not-attached → restore AnimBP) so clients un-pose on dismount.
+  (the seated pose — a **slot montage over the AnimBP**, v47, NOT SingleNode) **locally
+  on each client** in a non-gated loop from replicated state; keep gameplay server-only
+  behind `HasAuthority`. Add an un-seat branch (not-attached → `stop_slot_animation`) so
+  clients un-pose on dismount. This is the core MP model: **replicate STATE, animate
+  locally** — so "a dynamic montage doesn't replicate" is a non-issue (each client plays
+  it itself).
 - **Actor-attach replicates; component/mesh-attach does NOT.** Attach the follower
   **actor** (`AActor::K2_AttachToComponent`, parent = horse mesh) → clients see it
-  ride. Mesh-attach desyncs (host mounted, clients at origin). Relative loc/rot set
-  after an actor-attach replicate with it.
+  ride. Mesh-attach desyncs (host mounted, clients at origin).
+- **Relative loc/rot must be re-applied CLIENT-SIDE (v47).** `AttachmentReplication`
+  carries the relative transform only as the **snapshot at attach time** — a later
+  server-side `K2_SetActorRelativeRotation`/`Location` (even re-asserted per tick) does
+  **not** re-reach a simulated proxy, so the remote view showed the rider **rotated wrong**
+  (host fine, proxy wrong). Fix: each client re-applies the saddle relative loc/rot itself,
+  every seated tick, in the cosmetic loop (it has the data — the follower is attached to
+  our horse). Keep the server set too as the authoritative value.
 - **BP attach/detach need the `K2_` prefix.** `K2_AttachToComponent` /
   `K2_DetachFromActor` are the BlueprintCallable versions; the plain C++ names
   (`DetachFromActor`) compile clean but **silently no-op** (this caused the whole
   dismount bug). Python method names drop the prefix (`detach_from_actor`).
 - **Server-side animation does NOT auto-replicate.** `PlayAnimMontage` replicates;
   a single-node `play_animation` and a *transient/dynamic* slot montage do **not** —
-  confirmed even on the host *player*. A replicating seated full-body pose needs a
-  **real (saved) AnimMontage on the `Fullbody3rd` slot**, not a dynamic montage.
+  confirmed even on the host *player*. **This is moot for our pose** because we play the
+  dynamic montage **client-locally** off the replicated attach (v47), not server→client.
+  You'd only need a **real (saved) AnimMontage on `Fullbody3rd`** (or an emote, below) if
+  you wanted a *server-driven* replicated anim — we don't.
 - **Emotes replicate:** `EmoteController.start_emote` multicasts and reaches clients
   (e.g. `CharacterEmotes.SIT_ON_GROUND`) — a promising replicated-pose path.
 - Exclude **mountable creatures** (horses) and **other players**

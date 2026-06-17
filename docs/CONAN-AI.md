@@ -120,35 +120,38 @@ order: `ConanAttackerAIController.clear_command()`.
 
 ---
 
-## Application: mounted-followers — the dismount-AI bug (ACTUAL root cause, v46)
+## Application: mounted-followers — the dismount-AI bug (ACTUAL root cause, v47, MP-confirmed)
 
 Symptom: after a mount/dismount cycle a follower gets hit but **won't engage** ("attack on
 sight" looks dead), intermittently, in the first combats after dismount; a never-mounted
-follower is fine. **THE CAUSE — the movement mode.** A seated follower is frozen with
-`MOVE_None`; both restore paths un-froze it with **`SetMovementMode(MOVE_Walking)` (1)**. But
-AI followers **path and fight on the navmesh = `MOVE_NavWalking` (2)**; `MOVE_Walking` is
-physics-walking (how players move), and in it the AI **can't path to targets** → it stands
-there taking hits. Fix (v46): restore to **`MOVE_NavWalking`**, not `MOVE_Walking`. This was
-the original v1 bug (restore always used Walking); the intermittency was whether the AI
-self-recovered 1→2. **Diagnostic signature: `MovementMode==1` after dismount = broken;
-`==2` = healthy.** (`EMovementMode`: 0 None, 1 Walking, 2 NavWalking, 3 Falling.)
+follower is fine. **THE CAUSE — the saddle pose re-initialized the AnimBP.** Posing the seated
+follower with `SetAnimationMode(SingleNode)` and restoring with `SetAnimationMode(AnimationBlueprint)`
+**destroys and rebuilds the follower's AnimBP on every dismount** (the mode switch re-inits it
+regardless of `bForceInitAnimScriptInstance`), and the freshly-rebuilt AnimBP **wedges the AI** →
+lethargic, won't path to or engage targets. Fix (v47): **never switch anim mode** — pose with a
+**client-local slot montage** (`play_slot_animation_as_dynamic_montage` on `Fullbody3rd`) *over* the
+running AnimBP; the server does no follower anim at all. See `docs/CONAN-NOTES.md` §Pose.
 
-**The leash theories (v43–v45) were a RED HERRING.** `is_ai_controller_leashing`,
-engagement behaviour, behaviour subtrees — an on-screen debug overlay (see below) showed those
-were all *normal* while the follower failed; only the movement mode was wrong. v43
-(`try_resume_from_catch_up_time`+`cancel_any_forced_movement`), v44
-(`reset_all_behavior_subtrees_to_default`), v45 (`set_should_not_leash`/`finish_leashing`) stay
-as harmless belt, but they were never the fix. **Lesson: don't pattern-match a symptom word
-("passive") to an API — measure the actual state.** We were blind for three versions because
-the leash never trips in PIE; the bug was movement-mode all along and *did* reproduce in PIE
-once we looked at `MovementMode`.
+**Movement mode (v46) was necessary but NOT sufficient.** Restore must use `MOVE_NavWalking` (2),
+not `MOVE_Walking` (1) — AI followers path/fight on the navmesh, and physics-Walking can't path. That
+fix is correct and stays. But it did **not** resolve the lethargy on its own: the overlay showed
+`move=2` holding while the follower was *still* dead — which is precisely what pointed past movement
+mode to the remaining variable, the anim-mode swap. (`EMovementMode`: 0 None, 1 Walking, 2 NavWalking,
+3 Falling.)
+
+**The leash theories (v43–v45) were a RED HERRING too.** `is_ai_controller_leashing`, engagement
+behaviour, behaviour subtrees were all *normal* on the overlay while the follower failed. v43–v45
+(`try_resume_from_catch_up_time`/`cancel_any_forced_movement`, `reset_all_behavior_subtrees_to_default`,
+`set_should_not_leash`/`finish_leashing`) were removed in v47 — never the fix. **Lesson: don't
+pattern-match a symptom word ("passive") to an API — measure the actual state, then when the obvious
+suspect (movement mode) is *confirmed healthy* and the bug persists, keep going to the next variable.**
 
 **What actually cracked it: building observability.** A persistent in-game UMG overlay
-(`WBP_DebugOverlay` + the manager's `OVERLAY` flag) that dumps each humanoid follower's live
-state — `eng / leash / move / seat / atk / combat / tgt / fol / cd` — on screen, built in BP so
-it survives Shipping (PrintString/GetAll are stripped). `move=1` vs `move=2` was invisible until
-it was on screen. Keep this overlay (flip `OVERLAY=True`) as the first move for any future
-follower-AI bug. (It's authored with bpkit's UMG capability — see INTERNALS.md §11.)
+(`WBP_DebugOverlay` + the manager's `OVERLAY` flag) that dumps each humanoid follower's live state —
+`eng / leash / move / seat / atk / combat / tgt / fol / cd` — on screen, built in BP so it survives
+Shipping (PrintString/GetAll are stripped). It ruled out leash + movement-mode by *showing them
+normal*, isolating the anim swap. Keep this overlay (flip `OVERLAY=True`) as the first move for any
+future follower-AI bug. (Authored with bpkit's UMG capability — see INTERNALS.md §11.)
 
 **The v32 per-tick maintain pass STAYS** — it re-pins `MOVE_None` *and* re-asserts the saddle
 transform every tick, defending against the engine teleporting/correcting the seated actor

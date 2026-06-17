@@ -184,7 +184,23 @@ CUSTOM_CMD_TABLE = "/Game/Systems/Cheats/CustomConsoleCommandsDataTable"  # game
 #      rescue) MOVE_Walking -> MOVE_NavWalking. This is the original v1 bug (restore always used Walking);
 #      the intermittency was whether the AI self-recovered 1->2. Supersedes the v43-v45 leash theories as
 #      the actual fix (those stay as harmless belt). Cooked verification (overlay should now hold move=2).
-MGR_VERSION = 46
+# 47 = THE ACTUAL ROOT CAUSE (MP-CONFIRMED 2026-06-17). v46's NavWalking was necessary but NOT sufficient --
+#      move held at 2 yet the follower was still lethargic. Real cause: the SADDLE POSE. Posing via
+#      SetAnimationMode(SingleNode) on stow + back to AnimationBlueprint on restore DESTROYS and REBUILDS
+#      the follower's AnimBP on every dismount, and the fresh AnimBP wedges the AI (won't path/engage).
+#      FIX: never switch animation mode. Pose with a CLIENT-LOCAL slot MONTAGE on the Fullbody3rd slot
+#      (PlaySlotAnimationAsDynamicMontage), played OVER the running AnimBP -- no re-init -> AI stays active.
+#      The server does NO anim at all now (just attach + MOVE_None + collision); each render client poses
+#      ITSELF off the native-replicated actor-attach (replicate STATE, animate locally -- so a "dynamic
+#      montage doesn't replicate" is a non-issue). Guard: IsPlayingSlotAnimation(ourAnim, slot) -> play if
+#      not posing / stop on un-seat, precise so it never touches the follower's combat montages. LoopCount
+#      is a big finite int (this node has no infinite flag; 0 clamps to 1 = a 4s bob). ALSO: the saddle
+#      relative loc/rot is now re-applied CLIENT-SIDE per tick in the cosmetic loop -- the server set it but
+#      AttachmentReplication only carries the relative xform at attach time, so the per-tick server re-assert
+#      never reached a simulated proxy (remote view showed the rider rotated wrong). Server-side set stays as
+#      the authoritative value. Removed the v43-v45 leash push/pop (moot -- leashing was never the cause).
+#      OVERLAY off for release; DEBUG console beacons stay on (Shipping-stripped, free).
+MGR_VERSION = 47
 
 # Seated idle pose played on a stowed rider (full object path).
 IDLE_ANIM = ("/Game/Characters/humans/animations/mounted/Horse/"
