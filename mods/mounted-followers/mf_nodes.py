@@ -19,12 +19,13 @@ CMC    = "/Script/Engine.CharacterMovementComponent"
 ACTOR  = "/Script/Engine.Actor"
 CAPSULE = "/Script/Engine.CapsuleComponent"
 ANIMSEQ = "/Script/Engine.AnimSequence"
+USERWIDGET = "/Script/UMG.UserWidget"
 KSL    = "/Script/Engine.KismetSystemLibrary"
 KTL    = "/Script/Engine.KismetTextLibrary"
 
 # component-var -> declared component class (for comp_of's typed output pin)
 CLS = {"Mesh": SMC, "CharacterMovement": CMC, "CapsuleComponent": CAPSULE,
-       "PlayerMount": CONAN, "MountIdleAnim": ANIMSEQ}
+       "PlayerMount": CONAN, "MountIdleAnim": ANIMSEQ, "OverlayWidget": USERWIDGET}
 STRUCTS = {}
 ENUM = {
     "EAttachmentRule": ir.enum_path("/Script/Engine.EAttachmentRule"),

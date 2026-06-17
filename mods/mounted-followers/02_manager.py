@@ -31,6 +31,10 @@ GS = "/Script/Engine.GameplayStatics"
 KSL = "/Script/Engine.KismetSystemLibrary"
 KML = "/Script/Engine.KismetMathLibrary"
 KTL = "/Script/Engine.KismetTextLibrary"
+UMGLIB = "/Script/UMG.WidgetBlueprintLibrary"
+USERWIDGET = "/Script/UMG.UserWidget"
+TEXTBLOCK = "/Script/UMG.TextBlock"
+OVERLAY_WBP = "%s/WBP_DebugOverlay.WBP_DebugOverlay_C" % PKG   # generated class of the debug widget
 DTAB = "/Script/Engine.DataTable"
 GAMESTATE = "/Script/Engine.GameStateBase"   # has PlayerArray (cheap player enumeration; v40)
 PSTATE = "/Script/Engine.PlayerState"
@@ -50,6 +54,11 @@ CUSTOM_CMD_OBJ = "%s.%s" % (_ccc, _ccc.rsplit("/", 1)[1])        # game's Custom
 #   channel that survives Shipping (proven v26-v32). Default OFF: the shipped mod is silent.
 DEBUG = True
 HUD_DIAG = False
+# OVERLAY: reusable in-game debug overlay (UMG WBP_DebugOverlay, a persistent on-screen text panel
+#   that survives Shipping -- unlike PrintString). Built client-side on the render path. SPIKE STAGE:
+#   currently just creates the widget + shows a static "alive" string to prove the BP create/show pipe
+#   (Python can't init UMG widgets -- CreateWidget is BP-only). Next: pump the follower-AI state string.
+OVERLAY = True   # debug overlay via g.create_widget (K2Node_CreateWidget). SPIKE: static "alive" text.
 
 # edit in place (reuse if present) -- deleting+recreating leaves a stale redirector
 # that blocks recreate; the manager uses override EVENTS (not custom events) so
@@ -95,6 +104,13 @@ for vn in ("SpareHorses", "OccupiedHorses", "ActiveSeats", "InitializedPlayers")
     unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, vn, conan_arr)
 anim_ref = unreal.BlueprintEditorLibrary.get_object_reference_type(unreal.AnimSequence.static_class())
 unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, "MountIdleAnim", anim_ref)
+if OVERLAY:
+    # holds the created debug-overlay widget instance (created once, client-side)
+    uw_ref = unreal.BlueprintEditorLibrary.get_object_reference_type(unreal.UserWidget.static_class())
+    unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, "OverlayWidget", uw_ref)
+    # per-tick string accumulator for the follower-state dump
+    _strt = unreal.BlueprintEditorLibrary.get_basic_type_by_name("string")
+    unreal.BlueprintEditorLibrary.add_member_variable(bp_obj, "OverlayText", _strt)
 if DEBUG or HUD_DIAG:
     # once-per-ride latch for the leash-catch report (re-armed while unmounted)
     boolt = unreal.BlueprintEditorLibrary.get_basic_type_by_name("bool")
@@ -320,7 +336,90 @@ dds = g.call("IsDedicatedServer", KSL, pos=(-650, -250))   # KismetSystemLibrary
 ddsBranch = g.branch(pos=(-450, -250))
 g.wire(dds, "ReturnValue", ddsBranch, "Condition", exec=False)
 g.wire(resetAM, "then", ddsBranch, "execute", exec=True)
-g.wire(ddsBranch, "else", gaC, "execute", exec=True)        # render -> cosmetic
+# v46 OVERLAY (render path, before the cosmetic loop): build the debug overlay once + show it, then
+# SetText its 'Body'. Client-side (this is the non-dedicated render branch). SPIKE: static text to
+# prove the BP create/show pipe (CreateWidget is BP-only -- Python can't init UMG widgets).
+if OVERLAY:
+    gpc = g.call("GetPlayerController", GS, pos=(-300, -760))   # pure (data)
+    g.typed_input(gpc, "PlayerIndex", "0", "int")
+    owVal = g.call("IsValid", KSL, pos=(-120, -560))
+    g.wire(var_self("OverlayWidget", (-300, -560)), "OverlayWidget", owVal, "Object", exec=False)
+    bOw = g.branch(pos=(-120, -760))
+    g.wire(ddsBranch, "else", bOw, "execute", exec=True)
+    g.wire(owVal, "ReturnValue", bOw, "Condition", exec=False)
+    # not created yet -> CreateWidget(WBP_DebugOverlay, OwningPlayer=PC) + store + AddToViewport.
+    # K2Node_CreateWidget (the specialized node) -- WidgetBlueprintLibrary.Create isn't paste-resolvable.
+    crt = g.create_widget(OVERLAY_WBP, pos=(120, -880))
+    g.wire(gpc, "ReturnValue", crt, "OwningPlayer", exec=False)
+    g.wire(bOw, "else", crt, "execute", exec=True)
+    owStore = var_set_m("OverlayWidget", (380, -880))
+    g.wire(crt, "ReturnValue", owStore, "OverlayWidget", exec=False)
+    g.wire(crt, "then", owStore, "execute", exec=True)
+    atv = g.call("AddToViewport", USERWIDGET, pos=(620, -880))
+    g.typed_input(atv, "ZOrder", "1000000", "int")   # debug layer on top of the game HUD (HP bar etc.)
+    g.wire(var_self("OverlayWidget", (620, -1060)), "OverlayWidget", atv, "self", exec=False)
+    g.wire(owStore, "then", atv, "execute", exec=True)
+    # converge (both branches) -> SetText(Body). GetWidgetFromName's Name is a const FName& (by-ref)
+    # -> it must be WIRED, a literal default is rejected; feed a MakeLiteralName.
+    gwn = g.call("GetWidgetFromName", USERWIDGET, pos=(880, -740))   # pure (data)
+    g.wire(var_self("OverlayWidget", (880, -920)), "OverlayWidget", gwn, "self", exec=False)
+    mln = g.call("MakeLiteralName", KSL, pos=(660, -560))
+    g.typed_input(mln, "Value", "Body", "name")
+    g.wire(mln, "ReturnValue", gwn, "Name", exec=False)
+    castTB = g.cast(TEXTBLOCK, pos=(1120, -760))
+    g.wire(gwn, "ReturnValue", castTB, "Object", exec=False)
+    g.wire(bOw, "then", castTB, "execute", exec=True)    # already created -> just set text
+    g.wire(atv, "then", castTB, "execute", exec=True)    # just created -> set text
+    # --- build the live state string from the LOCAL player's followers (client-side; accurate on a
+    # listen/SP host where client==server). Per follower: " [eng=<byte> lsh=<bool>]" appended to the
+    # OverlayText accumulator. Built in BP nodes so it survives Shipping (no PrintString/GetAll). ---
+    clrTxt = g.var_set("OverlayText", "string", pos=(1120, -1100))
+    clrTxt.pin("OverlayText").literal("MF v%d  eng:0=PASV 1=DEF 2=AGGR " % MOD.MGR_VERSION)
+    g.wire(castTB, "then", clrTxt, "execute", exec=True)
+    getPawn = g.call("K2_GetPawn", "/Script/Engine.Controller", pos=(620, -1280))   # pure
+    g.wire(gpc, "ReturnValue", getPawn, "self", exec=False)
+    castLP = g.cast(CONAN, pos=(860, -1100))
+    g.wire(getPawn, "ReturnValue", castLP, "Object", exec=False)
+    g.wire(clrTxt, "then", castLP, "execute", exec=True)
+    getTSCo = g.call("GetThrallSystemComponent", CONAN, pos=(1100, -1300))   # pure
+    g.wire(castLP, "AsConan Character", getTSCo, "self", exec=False)
+    getFolO = g.call("GetFollowingThrallCharacters", TSC, pos=(1340, -1300))  # pure
+    g.wire(getTSCo, "ReturnValue", getFolO, "self", exec=False)
+    loopO = g.foreach(CONAN, pos=(1100, -1100))
+    g.wire(getFolO, "ReturnValue", loopO, "Array", exec=False)
+    g.wire(castLP, "then", loopO, "Exec", exec=True)
+    # per-follower data (all pure -> safe as data pins)
+    lz = g.call("IsAIControllerLeashing", CONAN, pos=(1360, -1380))
+    g.wire(loopO, "Array Element", lz, "self", exec=False)
+    lzs = g.call("Conv_BoolToString", KSL_STR, pos=(1580, -1380))
+    g.wire(lz, "ReturnValue", lzs, "InBool", exec=False)
+    eb = g.call("GetEngagementBehavior", CONAN, pos=(1360, -1520))
+    g.wire(loopO, "Array Element", eb, "self", exec=False)
+    ebs = g.call("Conv_ByteToString", KSL_STR, pos=(1580, -1520))   # enum is byte-backed
+    g.wire(eb, "ReturnValue", ebs, "InByte", exec=False)
+    # line = " [eng=" + ebs + " lsh=" + lzs + "]"
+    c1 = g.call("Concat_StrStr", KSL_STR, pos=(1800, -1500)); g.typed_input(c1, "A", " [eng=", "string"); g.wire(ebs, "ReturnValue", c1, "B", exec=False)
+    c2 = g.call("Concat_StrStr", KSL_STR, pos=(2000, -1500)); g.wire(c1, "ReturnValue", c2, "A", exec=False); g.typed_input(c2, "B", " lsh=", "string")
+    c3 = g.call("Concat_StrStr", KSL_STR, pos=(2200, -1500)); g.wire(c2, "ReturnValue", c3, "A", exec=False); g.wire(lzs, "ReturnValue", c3, "B", exec=False)
+    c4 = g.call("Concat_StrStr", KSL_STR, pos=(2400, -1500)); g.wire(c3, "ReturnValue", c4, "A", exec=False); g.typed_input(c4, "B", "]", "string")
+    # append the line to the accumulator (exec, in the loop body)
+    otGet = g.var_get("OverlayText", "string", pos=(1100, -940))
+    appc = g.call("Concat_StrStr", KSL_STR, pos=(1360, -940)); g.wire(otGet, "OverlayText", appc, "A", exec=False); g.wire(c4, "ReturnValue", appc, "B", exec=False)
+    setOT = g.var_set("OverlayText", "string", pos=(1600, -1100))
+    g.wire(appc, "ReturnValue", setOT, "OverlayText", exec=False)
+    g.wire(loopO, "LoopBody", setOT, "execute", exec=True)
+    # loop done -> SetText(Body, OverlayText)
+    otGet2 = g.var_get("OverlayText", "string", pos=(2000, -940))
+    conv = g.call("Conv_StringToText", KTL, pos=(2220, -940))
+    g.wire(otGet2, "OverlayText", conv, "InString", exec=False)
+    setTxt = g.call("SetText", TEXTBLOCK, pos=(2440, -1100))
+    g.wire(castTB, "AsText", setTxt, "self", exec=False)   # TextBlock display name is "Text" -> AsText
+    g.wire(conv, "ReturnValue", setTxt, "InText", exec=False)
+    g.wire(loopO, "Completed", setTxt, "execute", exec=True)
+    g.wire(setTxt, "then", gaC, "execute", exec=True)      # then continue to the cosmetic loop
+    g.wire(castLP, "CastFailed", gaC, "execute", exec=True)  # safety: player not a ConanChar -> skip dump
+else:
+    g.wire(ddsBranch, "else", gaC, "execute", exec=True)        # render -> cosmetic
 g.wire(loopMC, "Completed", bAuth, "execute", exec=True)    # cosmetic done -> server pass
 g.wire(ddsBranch, "then", bAuth, "execute", exec=True)      # dedicated -> skip cosmetic, server pass
 
