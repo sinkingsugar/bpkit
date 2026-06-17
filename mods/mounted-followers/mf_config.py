@@ -200,7 +200,19 @@ CUSTOM_CMD_TABLE = "/Game/Systems/Cheats/CustomConsoleCommandsDataTable"  # game
 #      never reached a simulated proxy (remote view showed the rider rotated wrong). Server-side set stays as
 #      the authoritative value. Removed the v43-v45 leash push/pop (moot -- leashing was never the cause).
 #      OVERLAY off for release; DEBUG console beacons stay on (Shipping-stripped, free).
-MGR_VERSION = 47
+# 48 = RESTORE NUDGE (post-v47 live test, Giovanni 2026-06-17): v47 fixed the lethargy, but on dismount the
+#      follower detaches (KeepWorld) AT its (spare) horse's saddle -- so it starts EMBEDDED in the horse and
+#      walks back toward it, colliding with the horse. Added an AI nudge to BOTH restore paths (sweep +
+#      statue rescue): GetController -> cast ConanAttackerAIController -> StopMovement() (cancel the stale
+#      move target) -> TeleportControlledPawnToPlayer() (relocate to its player, clear of the horse -- the
+#      game's OWN follower-recall, player_ref unset = the controller's own player) -> ResetAllBehaviorSubtrees
+#      ToDefault() (re-evaluate -> clean follow). One-shot per restore (the follower isn't re-detected as
+#      seated once detached), terminal, cast-fail = skip. NOTE: v43's CancelAnyForcedMovement/
+#      TryResumeFromCatchUpTime are NOT reflected on these controllers (silently dropped originally, never
+#      ran); StopMovement / TeleportControlledPawnToPlayer / the subtree reset are the available, reflected
+#      primitives. Tradeoff: a small teleport "pop" on each dismount (followers gather to you). Cooked
+#      verification (the collide/stale-path only trips on a real server, not PIE).
+MGR_VERSION = 48
 
 # Seated idle pose played on a stowed rider (full object path).
 IDLE_ANIM = ("/Game/Characters/humans/animations/mounted/Horse/"

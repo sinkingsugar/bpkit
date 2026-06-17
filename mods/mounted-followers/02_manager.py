@@ -189,6 +189,32 @@ def dump_ai(fol, fol_pin, pos):
     g.wire(c1, "ReturnValue", p, "InString", exec=False)
     return p
 
+def ai_nudge(fol, fol_pin, pos):
+    """RESTORE nudge (v48): GetController -> cast ConanAttackerAIController -> StopMovement() ->
+    TeleportControlledPawnToPlayer() -> ResetAllBehaviorSubtreesToDefault(). On dismount the follower
+    detaches (KeepWorld) AT its (spare) horse's saddle -- so it starts embedded in the horse AND has a
+    stale move target back toward it -> it walks back into the horse and collides. StopMovement cancels the
+    stale path; TeleportControlledPawnToPlayer relocates it to its player, clear of the horse (the game's
+    OWN follower-recall, player_ref unset -> the controller's own player); the subtree reset re-evaluates so
+    it resumes a clean follow. (v43's CancelAnyForcedMovement/TryResumeFromCatchUpTime are NOT reflected on
+    these controllers -- they silently dropped originally; these three ARE the available primitives.) Returns
+    the cast node (exec ENTRY) -- chain LAST (cast success -> ... is terminal; cast-fail = non-humanoid skip)."""
+    x, y = pos
+    ctrl = g.call("GetController", PAWN, pos=(x, y + 180))   # pure
+    g.wire(fol, fol_pin, ctrl, "self", exec=False)
+    castc = cast_node(ATKCTRL, (x, y))
+    g.wire(ctrl, "ReturnValue", castc, "Object", exec=False)
+    stopm = g.call("StopMovement", ATKCTRL, pos=(x + 280, y))
+    g.wire(castc, ATKCAST, stopm, "self", exec=False)
+    g.wire(castc, "then", stopm, "execute", exec=True)
+    tp = g.call("TeleportControlledPawnToPlayer", ATKCTRL, pos=(x + 520, y))   # relocate to player (clear of horse)
+    g.wire(castc, ATKCAST, tp, "self", exec=False)
+    g.wire(stopm, "then", tp, "execute", exec=True)
+    rst = g.call("ResetAllBehaviorSubtreesToDefault", ATKCTRL, pos=(x + 820, y))
+    g.wire(castc, ATKCAST, rst, "self", exec=False)
+    g.wire(tp, "then", rst, "execute", exec=True)
+    return castc
+
 # === COSMETIC SEAT loop -- driven from ReceiveTick below on every RENDER-capable instance (clients +
 # listen host + SP); a dedicated server skips it (v41 IsDedicatedServer gate -- no render). Ungated by
 # mount state. Now that the manager is Always Relevant it actually exists + ticks on clients, so this
@@ -918,10 +944,15 @@ colD0 = bare_call("SetActorEnableCollision", ACTOR, (4050, 3050))
 set_default(colD0, "bNewActorEnableCollision", "true", "bool")
 g.wire(loopDist, "Array Element", colD0, "self", exec=False)
 g.wire(walkD0, "then", colD0, "execute", exec=True)
-# (v45 leash pop removed -- moot.) Statue rescue = movement + collision back (above); optional DEBUG line.
+# (v45 leash pop removed -- moot.) Statue rescue = movement + collision back (above) + the v48 AI nudge.
+lastD0 = colD0
 if DEBUG:
     dbgResc = dbg("statue rescue (unfroze a stranded rider)", (4300, 3050))
     g.wire(colD0, "then", dbgResc, "execute", exec=True)
+    lastD0 = dbgResc
+# v48 nudge: clear the stale move/catch-up path + reset behavior so the rescued rider follows clean
+nD0 = ai_nudge(loopDist, "Array Element", (4600, 2850))
+g.wire(lastD0, "then", nD0, "execute", exec=True)
 
 # === GLOBAL RESTORE SWEEP (after the player loop): any humanoid still seated on a horse NO
 # mounted player legitimized this tick (ActiveSeats) gets restored. ONE restore path covers
@@ -1006,6 +1037,9 @@ chainG.then(colG)
 if DEBUG:
     chainG.then(dump_ai(castG, "AsConan Character", (3300, 3450)))   # console: leash state at dismount
     chainG.then(dbg("sweep-restored a rider (dismount/orphan)", (4550, 3700)))
+# v48 nudge: clear the stale move/catch-up path + reset behavior so the dismounted rider follows clean
+# (was: sometimes lagged / pathed toward a stale far point before catching up). Terminal; cast-fail skips.
+chainG.then(ai_nudge(castG, "AsConan Character", (4900, 3700)))
 
 # Build the EventGraph through the harness: clear + inject (auto-relinks any wire the engine
 # drops on paste -- the GetArrayItem.Output class) + compile + save + full scan (dropped
