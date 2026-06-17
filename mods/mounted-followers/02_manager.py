@@ -52,13 +52,13 @@ CUSTOM_CMD_OBJ = "%s.%s" % (_ccc, _ccc.rsplit("/", 1)[1])        # game's Custom
 # HUD_DIAG: optional SHIP-VISIBLE HUDShowFIFO banner ("kept a rider seated", once per ride)
 #   when the maintain pass catches the leash AI re-mobilizing a seated rider -- the ONLY
 #   channel that survives Shipping (proven v26-v32). Default OFF: the shipped mod is silent.
-DEBUG = True
+DEBUG = False
 HUD_DIAG = False
 # OVERLAY: reusable in-game debug overlay (UMG WBP_DebugOverlay, a persistent on-screen text panel
 #   that survives Shipping -- unlike PrintString). Built client-side on the render path. SPIKE STAGE:
 #   currently just creates the widget + shows a static "alive" string to prove the BP create/show pipe
 #   (Python can't init UMG widgets -- CreateWidget is BP-only). Next: pump the follower-AI state string.
-OVERLAY = True   # debug overlay via g.create_widget (K2Node_CreateWidget). SPIKE: static "alive" text.
+OVERLAY = False  # in-game debug overlay (live follower-AI readout). OFF for release; flip True to diagnose.
 
 # edit in place (reuse if present) -- deleting+recreating leaves a stale redirector
 # that blocks recreate; the manager uses override EVENTS (not custom events) so
