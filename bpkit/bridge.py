@@ -79,6 +79,16 @@ SYM = {
     # UEdGraphPin* UEdGraphNode::FindPin(const TCHAR*, EEdGraphPinDirection) const
     "FindPin": ("UnrealEditor-Engine.dll",
                 b"?FindPin@UEdGraphNode@@QEBAPEAVUEdGraphPin@@PEB_WW4EEdGraphPinDirection@@@Z"),
+    # === UMG: the designer's own copy/paste, the widget analogue of Im/ExportNodesToText ===
+    # void FWidgetBlueprintEditorUtils::ExportWidgetsToText(TArray<UWidget*> /*byval*/, FString& out)
+    #   -- TArray is BY VALUE -> ~TArray frees its buffer on return, so the element buffer MUST be
+    #      FMemory::Malloc'd (same gotcha as ExportNodesToText's by-value TSet).
+    "ExportWidgetsToText": ("UnrealEditor-UMGEditor.dll",
+                            b"?ExportWidgetsToText@FWidgetBlueprintEditorUtils@@SAXV?$TArray@PEAVUWidget@@V?$TSizedDefaultAllocator@$0CA@@@@@AEAVFString@@@Z"),
+    # void FWidgetBlueprintEditorUtils::ImportWidgetsFromText(UWidgetBlueprint*, const FString&,
+    #        TSet<UWidget*>& outImported, TMap<FName, UWidgetSlotPair*>& outSlots)
+    "ImportWidgetsFromText": ("UnrealEditor-UMGEditor.dll",
+                              b"?ImportWidgetsFromText@FWidgetBlueprintEditorUtils@@SAXPEAVUWidgetBlueprint@@AEBVFString@@AEAV?$TSet@PEAVUWidget@@U?$DefaultKeyFuncs@PEAVUWidget@@$0A@@@VFDefaultSetAllocator@@@@AEAV?$TMap@VFName@@PEAVUWidgetSlotPair@@VFDefaultSetAllocator@@U?$TDefaultMapHashableKeyFuncs@VFName@@PEAVUWidgetSlotPair@@$0A@@@@@@Z"),
 }
 
 # ----------------------------------------------------------------------------
@@ -369,6 +379,60 @@ def import_nodes(graph_ptr, text):
     tset = _empty_tset()
     proc("ImportNodesFromText", None, ctypes.c_void_p, ctypes.c_void_p,
          ctypes.c_void_p)(graph_ptr, ctypes.byref(fs), ctypes.byref(tset))
+    return ctypes.c_int32.from_buffer(tset, 8).value
+
+
+# ----------------------------------------------------------------------------
+# UMG: read/write widget trees (FWidgetBlueprintEditorUtils Im/ExportWidgetsFromText)
+# ----------------------------------------------------------------------------
+def widget_tree(wbp_ptr):
+    """The UWidgetTree subobject of a UWidgetBlueprint (the WBP's `widget_tree` is
+    NOT reflected to Python in this build, but the subobject is findable by name)."""
+    return find_object("WidgetTree", outer=wbp_ptr)
+
+
+def tree_widgets(wbp_ptr):
+    """Every UWidget owned by the WBP's widget tree (root + descendants)."""
+    wt = widget_tree(wbp_ptr)
+    return objects_with_outer(wt) if wt else []
+
+
+def export_widgets(widget_ptrs):
+    """Serialize UWidget*s to designer copy/paste text (the widget analogue of
+    export_nodes). ExportWidgetsToText takes its TArray<UWidget*> BY VALUE and runs
+    ~TArray on return, so the element buffer is FMemory::Malloc'd -- UE frees what it
+    legitimately owns (same crash-safety contract as the by-value TSet export)."""
+    ptrs = [int(p) for p in widget_ptrs if p]
+    if not ptrs:
+        return ""
+    n = len(ptrs)
+    elem = proc("Malloc", ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32)(8 * n, 8)
+    for i, p in enumerate(ptrs):
+        ctypes.c_uint64.from_address(elem + 8 * i).value = p
+    ta = (ctypes.c_byte * 16)()                       # TArray<UWidget*> { data; num; max }
+    ctypes.c_uint64.from_buffer(ta, 0).value = elem
+    ctypes.c_int32.from_buffer(ta, 8).value = n
+    ctypes.c_int32.from_buffer(ta, 12).value = n
+    out = FString()
+    # x64 MSVC: a >8-byte by-value struct is passed by hidden pointer -> byref(ta).
+    proc("ExportWidgetsToText", None, ctypes.c_void_p, ctypes.c_void_p)(
+        ctypes.byref(ta), ctypes.byref(out))
+    return out.str()
+
+
+def import_widgets(wbp_ptr, text):
+    """MUTATING: paste widget copy/paste `text` into a WidgetBlueprint, creating real
+    UWidgets parented to its widget tree. Returns the imported-widget count (from the
+    out-TSet). NOTE: like the designer, this CREATES the widgets but does not itself
+    place a root / re-parent -- the caller sets the tree root (set_root_widget) or
+    re-parents via the returned slot map. The TMap<FName,UWidgetSlotPair*> out-param is
+    accepted into a zeroed buffer (valid empty TMap state) and ignored here."""
+    fs = FString.make(text)
+    tset = _empty_tset()
+    tmap = _empty_tset(256)                           # zeroed TMap out-param
+    proc("ImportWidgetsFromText", None, ctypes.c_void_p, ctypes.c_void_p,
+         ctypes.c_void_p, ctypes.c_void_p)(
+        wbp_ptr, ctypes.byref(fs), ctypes.byref(tset), ctypes.byref(tmap))
     return ctypes.c_int32.from_buffer(tset, 8).value
 
 

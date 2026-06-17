@@ -354,6 +354,36 @@ can carry reflected functions you can't see (e.g. `WebSocketConnectionManager`'s
   `bpkit/ops/probe_ws_flags.py` is the worked example. `Final` in the flags ⇒ no
   BP override can ever compile; no BP flags ⇒ unreachable from graphs.
 
+## 11. UMG: reading & authoring widget trees (2026-06-17)
+
+The `unreal` Python API in this build does **not** expose the UMG widget tree
+(`WidgetBlueprint.widget_tree` isn't a reflected property; `WidgetTree` /
+`WidgetBlueprintLibrary` aren't bound; `UserWidget` has no `initialize`). So you
+can neither author a widget hierarchy nor even create+init a widget instance from
+Python. But the **UMG designer's own copy/paste IS exported** — the widget analogue
+of `Im/ExportNodesToText` — so bpkit drives it the same way it drives graphs:
+
+- `FWidgetBlueprintEditorUtils::ExportWidgetsToText(TArray<UWidget*> /*byval*/, FString&)`
+  → `bridge.export_widgets(widget_ptrs) -> text`. The `TArray` is **by value** (`~TArray`
+  on return frees its buffer), so the element buffer is `FMemory::Malloc`'d — the same
+  crash-safety contract as the by-value `TSet` in `export_nodes`. x64 MSVC passes a
+  >8-byte by-value struct by hidden pointer, so `byref(tarray)` is the right ABI.
+- `FWidgetBlueprintEditorUtils::ImportWidgetsFromText(UWidgetBlueprint*, const FString&,
+  TSet<UWidget*>& out, TMap<FName,UWidgetSlotPair*>& out)` → `bridge.import_widgets(wbp, text)`.
+  Creates real `UWidget`s parented to the WBP's widget tree; returns the count.
+
+Get the tree (a subobject, findable even though unreflected) with `bridge.widget_tree(wbp)`
+/ `bridge.tree_widgets(wbp)`. The exported text is the canonical designer clipboard format
+(`Begin Object Class=/Script/UMG.CanvasPanel … CanvasPanelSlot … Content="…TextBlock'Body'"`),
+so you can hand-craft or template it. **Caveat:** `ImportWidgetsFromText` populates the tree
+but does **not** set `WidgetTree.RootWidget` (the designer's `PasteWidgets` does placement
+separately) — author-from-scratch needs a `RootWidget` write. Live-verified: round-tripped a
+CanvasPanel+TextBlock from one WBP into a fresh blank WBP (0→2 widgets, intact hierarchy).
+
+Showing a widget at runtime is a *separate, graph-side* problem: `WidgetBlueprintLibrary.Create`
+is not paste-resolvable (drops), so the create+show path needs the specialized
+`K2Node_CreateWidget` node.
+
 See [CONAN-NOTES.md](CONAN-NOTES.md) for the engine/game-specific node patterns
 discovered while building the mounted-followers mod, and [JOURNEY.md](JOURNEY.md)
 for how all of the above was reverse-engineered.
