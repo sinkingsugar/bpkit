@@ -932,7 +932,11 @@ bFrozD0 = g.branch(pos=(3550, 3050))
 g.wire(bParVD0, "else", bFrozD0, "execute", exec=True)   # unattached humanoid
 g.wire(eqMMD0, "ReturnValue", bFrozD0, "Condition", exec=False)
 walkD0 = bare_call("SetMovementMode", CMC, (3800, 3050))
-set_default(walkD0, "NewMovementMode", "MOVE_Walking", "byte", enum="EMovementMode")
+# v46 ROOT-CAUSE FIX: restore to MOVE_NavWalking (2), NOT MOVE_Walking (1). AI followers path + fight
+# on the navmesh (NavWalking); plain Walking is physics-walking and the AI can't path to targets, so it
+# gets hit but won't engage. We froze with MOVE_None, so we must un-freeze to the AI's mode, not Walking
+# (the v1 bug -- AstroCat/Giovanni 2026-06-17: works at move=2, fails when stuck at move=1).
+set_default(walkD0, "NewMovementMode", "MOVE_NavWalking", "byte", enum="EMovementMode")
 g.wire(rMoveD0, "CharacterMovement", walkD0, "self", exec=False)
 g.wire(bFrozD0, "then", walkD0, "execute", exec=True)
 colD0 = bare_call("SetActorEnableCollision", ACTOR, (4050, 3050))
@@ -1021,7 +1025,9 @@ set_default(amodeG, "InAnimationMode", "AnimationBlueprint", "byte", enum="EAnim
 g.wire(rMeshG, "Mesh", amodeG, "self", exec=False)
 chainG.then(amodeG)
 walkG = bare_call("SetMovementMode", CMC, (2750, 3700))
-set_default(walkG, "NewMovementMode", "MOVE_Walking", "byte", enum="EMovementMode")
+# v46 ROOT-CAUSE FIX: MOVE_NavWalking (2), not MOVE_Walking (1) -- see the statue-rescue note above.
+# This is THE dismount-AI bug: restore left the follower in physics-Walking, where the AI can't path/fight.
+set_default(walkG, "NewMovementMode", "MOVE_NavWalking", "byte", enum="EMovementMode")
 g.wire(rMoveG, "CharacterMovement", walkG, "self", exec=False)
 chainG.then(walkG)
 colG = bare_call("SetActorEnableCollision", ACTOR, (3000, 3700))

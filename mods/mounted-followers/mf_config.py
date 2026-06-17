@@ -175,7 +175,16 @@ CUSTOM_CMD_TABLE = "/Game/Systems/Cheats/CustomConsoleCommandsDataTable"  # game
 #      All on ConanAttackerAIController (GetController -> cast -> call); cast-fail = skip. Dropped v43's
 #      TryResumeFromCatchUpTime/CancelAnyForcedMovement and v44's ResetAllBehaviorSubtreesToDefault
 #      (FinishLeashing supersedes them). Cooked/real-server verification (the leash never trips in PIE).
-MGR_VERSION = 45
+# 46 = ROOT-CAUSE FIX for the dismount-AI bug (localized live via the debug overlay, Giovanni 2026-06-17):
+#      the follower works at move=NavWalking(2) and FAILS at move=Walking(1); a never-mounted follower
+#      stays at 2. Cause: both restore paths un-froze the follower with SetMovementMode(MOVE_Walking) --
+#      but AI followers path + fight on the navmesh (MOVE_NavWalking); plain Walking is physics-walking,
+#      so the AI can't path to targets (gets hit, won't engage). We freeze with MOVE_None, so restore
+#      MUST go to NavWalking, not Walking. Changed both SetMovementMode calls (global sweep + statue
+#      rescue) MOVE_Walking -> MOVE_NavWalking. This is the original v1 bug (restore always used Walking);
+#      the intermittency was whether the AI self-recovered 1->2. Supersedes the v43-v45 leash theories as
+#      the actual fix (those stay as harmless belt). Cooked verification (overlay should now hold move=2).
+MGR_VERSION = 46
 
 # Seated idle pose played on a stowed rider (full object path).
 IDLE_ANIM = ("/Game/Characters/humans/animations/mounted/Horse/"
