@@ -755,9 +755,21 @@ getParB = g.call("GetAttachParentActor", ACTOR, pos=(3050, 1930))
 g.wire(loopB, "Array Element", getParB, "self", exec=False)
 parVB = g.call("IsValid", KSL, pos=(3250, 1930))
 g.wire(getParB, "ReturnValue", parVB, "Object", exec=False)
+# v49: SEAT ONLY HUMANOID THRALLS. "not mountable" excludes horses but NOT animal pets
+# (a tamed sabertooth is also not mountable), so a pet fell through here and got seated like a
+# thrall. IsThrall (native ConanCharacter bool property, read off the follower) is the positive
+# discriminator: true = humanoid thrall -> maintain/stow; false = pet/creature -> dead-end (never
+# seated, just follows on foot). Gating maintain too is correct -- we never want a seated pet; the
+# global sweep (Pass G, IsMountable-only) still cleans up any pet seated by a pre-v49 build.
+isThrB = g.var_get("IsThrall", "bool", parent=CONAN, pos=(2900, 2150))
+g.wire(loopB, "Array Element", isThrB, "self", exec=False)
+bThrB = g.branch(pos=(2920, 1700))
+g.wire(bMtblB, "else", bThrB, "execute", exec=True)      # not a horse -> but is it a thrall?
+g.wire(isThrB, "IsThrall", bThrB, "Condition", exec=False)
 bParVB = g.branch(pos=(3050, 1700))
-g.wire(bMtblB, "else", bParVB, "execute", exec=True)     # humanoid
+g.wire(bThrB, "then", bParVB, "execute", exec=True)      # humanoid thrall -> maintain/stow
 g.wire(parVB, "ReturnValue", bParVB, "Condition", exec=False)
+# bThrB "else" (pet/creature) intentionally dead-ends -- never put in the saddle.
 castParB = cast_node(CONAN, (3300, 1700))
 g.wire(getParB, "ReturnValue", castParB, "Object", exec=False)
 g.wire(bParVB, "then", castParB, "execute", exec=True)   # attached -> to whom?

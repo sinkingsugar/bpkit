@@ -212,7 +212,18 @@ CUSTOM_CMD_TABLE = "/Game/Systems/Cheats/CustomConsoleCommandsDataTable"  # game
 #      ran); StopMovement / TeleportControlledPawnToPlayer / the subtree reset are the available, reflected
 #      primitives. Tradeoff: a small teleport "pop" on each dismount (followers gather to you). Cooked
 #      verification (the collide/stale-path only trips on a real server, not PIE).
-MGR_VERSION = 48
+# 49 = SEAT ONLY HUMANOID THRALLS (Giovanni 2026-06-18: a tamed sabertooth got seated on a horse instead
+#      of a thrall). The rider pool was "every follower that is NOT mountable" -- IsMountable=true excludes
+#      horses, and everything else was assumed a humanoid thrall and stowed onto a spare horse. But an
+#      ANIMAL PET (sabertooth/wolf/etc.) is also not mountable, so it fell through and got seated. Added an
+#      IsThrall gate at the head of Pass B (the seat decision): IsThrall is a native ConanCharacter bool
+#      property (FName confirmed "IsThrall", no b-prefix; read off the follower via a cross-instance
+#      VariableGet) -- true = humanoid thrall -> proceed to maintain/stow; false = pet/creature -> dead-end,
+#      never seated (it just follows on foot as the game intends). IsMountable alone can't tell a pet from a
+#      thrall; IsThrall is the positive discriminator. Safe failure mode (a misflagged humanoid would only
+#      fail to be seated, never a pet getting seated). Pass G (global restore sweep) is unchanged, so any
+#      pet seated by a pre-v49 build is still cleaned up. Cooked verification.
+MGR_VERSION = 49
 
 # Seated idle pose played on a stowed rider (full object path).
 IDLE_ANIM = ("/Game/Characters/humans/animations/mounted/Horse/"

@@ -44,6 +44,14 @@ fully **reflected** to Python, which is how it was audited.
 - **`is_mountable` (creature-type, true = horse) is the discriminator** between a
   following horse and a humanoid thrall — **not** `is_mount` (mount-*state*, flips
   and is true-for-all at mount time).
+- **`IsThrall` is the humanoid-thrall-vs-animal-pet discriminator** (true = humanoid
+  thrall, false = tamed animal pet/creature). `is_mountable` only separates horse from
+  not-horse, so it can't keep an animal pet (sabertooth/wolf) out of a "non-horse
+  follower" pool — `IsThrall` can (the v49 fix). Note it's a **bool UPROPERTY** (FName
+  exactly `IsThrall`, no `b` prefix — verified via `get_editor_property`), so in a BP it's
+  a cross-instance VariableGet off the follower, **not** a function call. Siblings on
+  `ConanCharacter`: `is_pet` (bool property, true = animal follower), `is_non_thrall_npc()`
+  / `is_mountable()` (functions). (live-verified 2026-06-18)
 - `GetEmbeddedSaddleId()` reads `None` even while a player is actively riding —
   **not** a "ridden/has-saddle" signal. Don't gate on it.
 - **Base-game log spam: `"Attempted to access BP_MountInput_C_0 via property
