@@ -53,11 +53,19 @@ WEAPON_TEMPLATE_ID = "920140"      # the equippable Shigawire launcher
 PROJECTILE_TEMPLATE_ID = "920141"  # its hook projectile/ammo
 DISPLAY_NAME = "Shigawire Launcher"
 
-# --- Tunables (PROVISIONAL -- real values come from feel-testing, not theory).
-PULL_SPEED = 2200.0     # launch speed toward the hit point (cm/s); the "reel-in" feel
-PULL_ARC = 0.35         # 0=flat yank, 1=lobbed arc; vertical component of the launch vector
-MAX_RANGE = 4000.0      # max grapple distance (cm); beyond this the hook just falls
-STAGGER_SECS = 1.5      # enemy CC duration on a hook hit (placeholder; depends on the CC primitive)
+# --- Launch-tech tunables (v2: launch tech, not arrest). The pull is split into a
+#     consistent horizontal zip toward the hook + a SHAPED, CLAMPED vertical pop:
+#       horizontal = normalize(flat dir to impact) * HORIZ_SPEED
+#       vertical   = MapRangeClamped( abs(impact.Z - player.Z), 0..DZ_REF, UP_MIN..UP_MAX )
+#     -> level wall = strong zip + modest pop; hook a ledge above OR floor below = bigger
+#     launch (abs() makes the FLOOR pogo you UP), bounded by UP_MAX so it's never orbit.
+#     Pull cook-confirmed working 2026-06-19; these shape the "after". All feel-tuned.
+HORIZ_SPEED = 2000.0    # horizontal zip toward the hook (cm/s) -- the impact strength (keep ~strong)
+UP_MIN      = 600.0     # vertical pop on a level hit (cm/s) -- the baseline leap
+UP_MAX      = 1500.0    # vertical cap (cm/s) -- strong launch, never orbit
+DZ_REF      = 900.0     # height delta (cm) at which the vertical pop reaches UP_MAX
+MAX_RANGE   = 4000.0    # max grapple distance (cm); beyond this the hook just falls (unused yet)
+STAGGER_SECS = 1.5      # enemy CC duration on a hook hit (placeholder; flinch is step 05)
 
 
 def full(name):

@@ -130,16 +130,27 @@ in the source — not introduced here).
 - **`03_controller.py`** — `BP_ShigawireController : ModController`; its
   `ModDataTableOperations` override calls `MergeDataTables(game ItemTable, DT_SW_Items)` to
   register both rows (the same merge mechanism mounted-followers used for `dc MFHorses`).
-- **`04_projectile.py`** — the **pull**: extends the cloned projectile's `StopProjectile`
-  event (fires when the hook embeds) with `HasAuthority` → `GetInstigator` → cast
-  `ConanCharacter` → `LaunchCharacter(GetDirectionUnitVector(instLoc, impactLoc) ·
-  PULL_SPEED, xy=T, z=T)` — fling the thrower toward where the hook bit.
+- **`04_projectile.py`** — **launch tech + auto-return** (self-resets via delete+reclone so
+  the logic is re-authorable). Extends the cloned projectile's `StopProjectile` event (fires
+  when the hook embeds), `HasAuthority`-gated → `GetInstigator` → cast `ConanCharacter`:
+  - **Launch** (`LaunchCharacter`, xy=z=override): the pull is split into a consistent
+    horizontal zip + a shaped/clamped vertical pop, so what you hit decides the launch:
+    `horizontal = Normalize(MakeVector(Δx, Δy, 0)) · HORIZ_SPEED`,
+    `vertical = MapRangeClamped(Abs(Δz), 0..DZ_REF, UP_MIN..UP_MAX)`. Level wall → strong
+    zip + modest pop; ledge above OR floor below → bigger launch (`Abs` makes the floor pogo
+    you up); `UP_MAX` caps orbit. All `sw_config` knobs.
+  - **Auto-return** (`SpawnTemplateItem(templateID=PROJECTILE_TEMPLATE_ID, …)` on the
+    instigator): refund the hook to the thrower's inventory (the base projectile uses the
+    same call to "spawn the projectile item in the receiver"). KNOWN: `showNotification`
+    stays `true` → a pickup toast per throw; silence it if spammy.
 
-### Pending (gated on the cook + play test of the pull)
+Cook-confirmed (2026-06-19, v1 simple pull): `StopProjectile` fires on impact + the launch
+works in-game. v2 launch-tech feel is tuned by cook (no fall-damage immunity — slow-fall
+spell handles landings, per Giovanni).
+
+### Pending
 - **Enemy flinch** (step 05): `StopProjectile` carries no hit actor, so a sphere-overlap at
   the impact point → `add_stagger` / `BP_Knockback_Flinch` on a hit `ConanCharacter`
   (`add_stagger`'s arg type to be read off the pin when authoring).
 - **Cosmetic cable** (`CableComponent` hand → impact, recomputed per render instance).
-- **Feel tuning** of `PULL_SPEED` / arc — and validating that `StopProjectile` actually
-  fires on impact + the launch feels right. These are **cook/play-only** validations (can't
-  be seen in-editor, like the mounted-followers leash bug) — hence the test gate here.
+- **Feel tuning** of `HORIZ_SPEED` / `UP_MIN` / `UP_MAX` / `DZ_REF` (cook/play-only).
