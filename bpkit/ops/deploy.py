@@ -41,9 +41,10 @@ if les.is_in_play_in_editor():
     print("ABORT: Play-in-Editor is running. Stop Play, then deploy.")
     raise SystemExit
 
-# load the manifest fresh
+# load the manifest fresh (drop the cached manifest + any per-mod *_config so a
+# re-deploy in the same editor session never reads a stale config)
 sys.path.insert(0, mod_dir)
-for m in ("manifest", "mf_config"):
+for m in [k for k in list(sys.modules) if k == "manifest" or k.endswith("_config")]:
     sys.modules.pop(m, None)
 try:
     man = importlib.import_module("manifest")
