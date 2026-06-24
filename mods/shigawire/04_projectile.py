@@ -102,23 +102,33 @@ launch = g.call("LaunchCharacter", CHAR, pos=(3120, 300))
 launch.pin("self").typed("object", ir.obj_path(CHAR), direction="EGPD_Input"); vin(launch, "LaunchVelocity")
 g.typed_input(launch, "bXYOverride", "true", "bool"); g.typed_input(launch, "bZOverride", "true", "bool")
 
-# --- auto-return: give the LAUNCHER back to the thrower (server-side). The thrown weapon
-# IS the consumable -- BP_ProjectileWeaponThrown.WeaponThrown decrements the weapon's stack
-# and RemoveItem(self)s it; the ammo row (920141) is only the projectile DEFINITION, never an
-# inventory item. So we refund WEAPON_TEMPLATE_ID (920140, real icon/name), NOT the ammo
-# (920141 = the dev-icon "weird item" of the earlier attempt). SpawnTemplateItem(self=character,
-# templateID, context) is the base projectile's proven grant; context must be a valid tag
-# ("loot_ground"); an EMPTY context no-ops. The item lands in `self`'s inventory.
-giveback = g.call("SpawnTemplateItem", CONAN, pos=(3460, 300))
-giveback.pin("self").typed("object", ir.obj_path(CONAN), direction="EGPD_Input")
+# --- auto-return + AUTO RE-EQUIP: put the LAUNCHER straight back into its OFF_HAND equip slot
+# so it stays equipped -> seamless re-throw (no manual re-equip). The throw consumes the weapon
+# itself (BP_ProjectileWeaponThrown.WeaponThrown decrements the weapon stack + ForceUnequips at
+# 0); refunding to the SLOT (not the backpack) tops the slot back up so it never empties.
+# Slot = EquipmentSlots.OFF_HAND (=2), matching the item's EquipLocation. We refund the WEAPON
+# row (920140, real icon), NOT the ammo row (920141 = the dev-icon "weird item" of the earlier
+# attempt -- the ammo is only the projectile DEFINITION, never an inventory item).
+EQUIPINV = "/Script/ConanSandbox.EquipmentInventory"
+EQSLOTS  = "/Script/ConanSandbox.EquipmentSlots"
+geteq = g.call("GetEquipmentInventoryNative", CONAN, pos=(3420, 200))   # pure getter
+geteq.pin("self").typed("object", ir.obj_path(CONAN), direction="EGPD_Input")
+geteq.pin("ReturnValue").typed("object", ir.obj_path(EQUIPINV), direction="EGPD_Output")
+giveback = g.call("AddItemTemplateToSlot", EQUIPINV, pos=(3720, 300))
+giveback.pin("self").typed("object", ir.obj_path(EQUIPINV), direction="EGPD_Input")
+slot = giveback.pin("slotID"); slot.dir = "EGPD_Input"
+slot.set("PinType.PinCategory", '"byte"'); slot.set("PinType.PinSubCategoryObject", ir.enum_path(EQSLOTS))
+slot.set("DefaultValue", '"OffHand"')   # BP enumerant name (C++), NOT the Python "OFF_HAND"
 g.typed_input(giveback, "templateID", MOD.WEAPON_TEMPLATE_ID, "int")
 g.typed_input(giveback, "context", "loot_ground", "name")
 
 # --- wiring ---
 g.wire(branch, "then", cast, "execute", exec=True)
 g.wire(cast, "then", launch, "execute", exec=True)
-g.wire(launch, "then", giveback, "execute", exec=True)   # ...then return the hook
-g.wire(cast, "AsConan Character", giveback, "self", exec=False)
+g.wire(launch, "then", geteq, "execute", exec=True)      # GetEquipmentInventoryNative is IMPURE -> exec
+g.wire(geteq, "then", giveback, "execute", exec=True)    # ...then return + re-equip the hook
+g.wire(cast, "AsConan Character", geteq, "self", exec=False)
+g.wire(geteq, "ReturnValue", giveback, "self", exec=False)
 g.wire(auth, "ReturnValue", branch, "Condition", exec=False); branch.pin("Condition").typed("bool", direction="EGPD_Input")
 g.wire(inst, "ReturnValue", cast, "Object", exec=False)
 g.wire(cast, "AsConan Character", insLoc, "self", exec=False)
@@ -170,7 +180,8 @@ print("ShouldSpawnDummyProjectile ->", cdo.get_editor_property("ShouldSpawnDummy
 
 full_txt = bp.export_nodes(bp.graph_nodes(gptr))
 orph = re.findall(r'PinName="([^"]+)"[^)]*?bOrphanedPin=True', full_txt)
-for fn in ("LaunchCharacter", "MapRangeClamped", "MakeVector", "BreakVector", "SpawnTemplateItem"):
-    print("  has %-22s %s" % (fn, ('MemberName="%s"' % fn) in full_txt))
+for fn in ("LaunchCharacter", "MapRangeClamped", "MakeVector", "BreakVector",
+           "GetEquipmentInventoryNative", "AddItemTemplateToSlot"):
+    print("  has %-28s %s" % (fn, ('MemberName="%s"' % fn) in full_txt))
 print("orphans:", sorted(set(orph)) if orph else "(clean)")
 print("04 OK" if 'MemberName="LaunchCharacter"' in full_txt and not orph else "04 CHECK")
